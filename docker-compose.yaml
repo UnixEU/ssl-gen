@@ -1,0 +1,23 @@
+services:
+  ssl-gen:
+    build: .
+    working_dir: /project
+    volumes:
+      - ./:/project
+    env_file:
+      - path: .env
+        required: false
+
+  webui:
+    build: ./webui
+    ports:
+      - "${WEBUI_BIND:-127.0.0.1}:${WEBUI_PORT:-8443}:8443"
+    volumes:
+      - ./:/project
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PROJECT_ROOT: /project
+      WEBUI_INTERNAL_PORT: "8443"
+    restart: unless-stopped

@@ -1,0 +1,21 @@
+# Local configuration (use .env.example as the template)
+.env
+.env.test
+.env.run
+
+# Web UI TLS material
+ui-ssl/
+
+# Generated Root CAs and certificates
+certs/*
+!certs/.gitkeep
+
+# Generated certificate artifacts
+*.key
+*.crt
+*.csr
+*.srl
+*.pem
+*.p12
+*.pfx
+*-extensions.cnf

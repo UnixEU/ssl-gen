@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SSL Gen</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none">
+              <path
+                d="M12 2L4 6v6c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V6l-8-4Z"
+                stroke="currentColor"
+                stroke-width="1.5"
+              />
+              <path
+                d="M9.5 12.2 11 13.7l3.5-3.6"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </div>
+          <div>
+            <p class="brand-title">SSL Gen</p>
+            <p class="brand-subtitle">Local Root CA Manager</p>
+          </div>
+        </div>
+
+        <nav class="nav" aria-label="Primary">
+          <button class="nav-link active" data-view="dashboard">Dashboard</button>
+          <button class="nav-link" data-view="generate">Generate</button>
+          <button class="nav-link" data-view="stores">Certificates</button>
+          <button class="nav-link" data-view="config">Configuration</button>
+          <button class="nav-link" data-view="trust">Trust Guide</button>
+        </nav>
+
+        <div class="sidebar-footer">
+          <p class="footer-label">Web UI</p>
+          <p class="footer-value" id="webui-url">https://127.0.0.1:8443</p>
+          <p class="footer-note">Localhost only · No authentication</p>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <h1 id="view-title">Dashboard</h1>
+            <p id="view-description">Overview of your local certificate stores.</p>
+          </div>
+          <div class="topbar-actions">
+            <button class="button button-secondary" id="refresh-button">Refresh</button>
+            <button class="button button-primary" id="quick-generate-button">
+              Generate Certificate
+            </button>
+          </div>
+        </header>
+
+        <section class="view active" id="view-dashboard">
+          <div class="stats-grid" id="stats-grid"></div>
+          <div class="panel-grid">
+            <article class="panel">
+              <div class="panel-header">
+                <h2>Certificate Stores</h2>
+              </div>
+              <div class="panel-body" id="dashboard-stores"></div>
+            </article>
+            <article class="panel">
+              <div class="panel-header">
+                <h2>Last Operation</h2>
+              </div>
+              <pre class="log-output compact" id="dashboard-log">No operations yet.</pre>
+            </article>
+          </div>
+        </section>
+
+        <section class="view" id="view-generate">
+          <form class="panel" id="generate-form">
+            <div class="panel-header">
+              <div>
+                <h2>Generate Certificate</h2>
+                <p class="panel-copy">
+                  Configure the Root CA and server certificate, then generate artifacts in
+                  <code>./certs/&lt;ROOT_CA_NAME&gt;/</code>.
+                </p>
+              </div>
+              <div class="panel-actions">
+                <label class="toggle">
+                  <input type="checkbox" id="save-before-generate" checked />
+                  <span>Save configuration to .env</span>
+                </label>
+              </div>
+            </div>
+
+            <div class="form-sections" id="generate-fields"></div>
+
+            <div class="form-footer">
+              <button type="button" class="button button-secondary" id="validate-button">
+                Validate
+              </button>
+              <button type="submit" class="button button-primary" id="generate-button">
+                Generate Certificate
+              </button>
+            </div>
+          </form>
+
+          <article class="panel">
+            <div class="panel-header">
+              <h2>Generation Output</h2>
+            </div>
+            <pre class="log-output" id="generate-log">Ready.</pre>
+          </article>
+        </section>
+
+        <section class="view" id="view-stores">
+          <div class="panel-grid single" id="stores-list"></div>
+        </section>
+
+        <section class="view" id="view-config">
+          <form class="panel" id="config-form">
+            <div class="panel-header">
+              <div>
+                <h2>Project Configuration</h2>
+                <p class="panel-copy">
+                  Edit the same values used by <code>make certs</code> and the terminal workflow.
+                </p>
+              </div>
+            </div>
+
+            <div class="form-sections" id="config-fields"></div>
+
+            <div class="form-footer">
+              <button type="button" class="button button-secondary" id="reload-config-button">
+                Reload
+              </button>
+              <button type="submit" class="button button-primary">Save Configuration</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="view" id="view-trust">
+          <article class="panel">
+            <div class="panel-header">
+              <h2>Trust the Root CA Locally</h2>
+              <p class="panel-copy">
+                Install the Root CA certificate in your system trust store so browsers and tools
+                accept certificates signed by it.
+              </p>
+            </div>
+            <div class="trust-grid" id="trust-commands"></div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-header">
+              <h2>Run Test Suite</h2>
+              <p class="panel-copy">
+                Executes the same automated checks as <code>make test</code>.
+              </p>
+            </div>
+            <div class="panel-body">
+              <button class="button button-secondary" id="run-tests-button">Run Tests</button>
+              <pre class="log-output" id="test-log">Tests have not been run in this session.</pre>
+            </div>
+          </article>
+        </section>
+      </main>
+    </div>
+
+    <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+    <div class="overlay" id="overlay" hidden>
+      <div class="overlay-card">
+        <div class="spinner" aria-hidden="true"></div>
+        <p id="overlay-message">Working...</p>
+      </div>
+    </div>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
