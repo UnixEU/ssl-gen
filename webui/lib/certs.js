@@ -282,11 +282,8 @@ function buildReuseConfig(projectRoot, storeName, certDefaults = {}) {
 }
 
 module.exports = {
-  CERTS_DIR_NAME,
-  getCertsRoot,
   discoverStores,
   deleteStore,
   deleteCertificate,
   buildReuseConfig,
-  readCertMetadata,
 };

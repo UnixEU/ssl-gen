@@ -1,5 +1,4 @@
 const fs = require("fs");
-const path = require("path");
 
 const ENV_KEYS = [
   "ROOT_CA_NAME",
@@ -268,7 +267,6 @@ function validateConfig(values) {
 }
 
 module.exports = {
-  ENV_KEYS,
   ENV_SECTIONS,
   readEnvFile,
   writeEnvFile,

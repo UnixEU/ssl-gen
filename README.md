@@ -4,7 +4,7 @@ A Docker-based tool for creating self-signed SSL certificates with a reusable lo
 
 ## Goal
 
-Provide one place to create and manage self-signed SSL certificates for local development. The project generates a private Root CA, uses it to sign server certificates, and stores all artifacts in a dedicated folder. When you need more certificates later, it reuses the existing Root CA instead of creating a new one.
+Provide one place to create and manage self-signed SSL certificates for local development. The project generates a private Root CA, uses it to sign server certificates, and stores all artifacts under `./certs/<ROOT_CA_NAME>/`. When you need more certificates later, it reuses the existing Root CA instead of creating a new one. A local web UI can edit the same `.env` file and generate certificates into that folder.
 
 ## Table of Contents
 
@@ -14,11 +14,12 @@ Provide one place to create and manage self-signed SSL certificates for local de
 4. [Configuration](#4-configuration)
 5. [Generating Your First Certificate](#5-generating-your-first-certificate)
 6. [Generating Additional Certificates](#6-generating-additional-certificates)
-7. [Using the Certificates](#7-using-the-certificates)
-8. [Trusting the Root CA Locally](#8-trusting-the-root-ca-locally)
-9. [Security Notes](#9-security-notes)
-10. [Testing](#10-testing)
-11. [Troubleshooting](#11-troubleshooting)
+7. [Web UI](#7-web-ui)
+8. [Using the Certificates](#8-using-the-certificates)
+9. [Trusting the Root CA Locally](#9-trusting-the-root-ca-locally)
+10. [Security Notes](#10-security-notes)
+11. [Testing](#11-testing)
+12. [Troubleshooting](#12-troubleshooting)
 
 ---
 
@@ -38,19 +39,26 @@ Ensure Docker is running before you generate certificates.
 
 ```
 .
-├── Dockerfile             # Alpine image with OpenSSL pre-installed
-├── docker-compose.yaml    # Runs the generator container
-├── Makefile               # Convenience commands (setup, certs, test)
+├── Dockerfile             # Alpine image with OpenSSL for certificate generation
+├── docker-compose.yaml    # ssl-gen and webui services; project bind-mounted at /project
+├── Makefile               # Convenience commands (setup, certs, webui, test, reset)
 ├── .env.example           # Configuration template (committed to git)
 ├── .env                   # Your local configuration (not committed)
+├── certs/                 # Generated output: ./certs/<ROOT_CA_NAME>/
 ├── README.md
-└── scripts/
-    ├── generate-certs.sh  # Certificate generation logic
-    ├── generate.sh        # Wrapper for docker compose run --rm
-    └── test.sh            # Automated verification tests
+├── scripts/
+│   ├── generate-certs.sh  # Certificate generation logic
+│   ├── generate.sh        # Wrapper for docker compose run --rm ssl-gen generate
+│   ├── generate-ui-ssl.sh # Self-signed TLS certificate for the web UI
+│   ├── test.sh            # Wrapper for docker compose run --rm ssl-gen test
+│   └── reset-project.sh   # Restore the project to template defaults
+└── webui/                 # Local HTTPS UI (separate Node image)
+    ├── Dockerfile
+    ├── server.js
+    └── public/
 ```
 
-After generation, a new folder appears in the project root named after `ROOT_CA_NAME` (for example, `my-root-ca/`). Certificate files are written there, not in a separate `workspace` folder.
+Generated certificates are written to `./certs/<ROOT_CA_NAME>/` (for example, `./certs/my-root-ca/`). Each Root CA has its own directory inside `certs/`. The `ssl-gen` and `webui` services both bind-mount the project directory, so files created in the container stay in that folder on the host.
 
 ---
 
@@ -114,6 +122,13 @@ All settings live in `.env`. File and folder names are taken directly from `ROOT
 | `EXPORT_P12` | `yes` | Export a PKCS#12 (`.p12`) bundle |
 | `P12_PASSWORD` | `changeit` | Password for the exported `.p12` file |
 
+### Web UI Settings
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WEBUI_BIND` | `127.0.0.1` | Host address published for the web UI. Must be `127.0.0.1` |
+| `WEBUI_PORT` | `8443` | Host port published for the web UI |
+
 ### Sample `.env`
 
 ```dotenv
@@ -142,16 +157,20 @@ KEY_TYPE=ec
 FORCE_REGENERATE=no
 EXPORT_P12=yes
 P12_PASSWORD=changeit
+
+WEBUI_BIND=127.0.0.1
+WEBUI_PORT=8443
 ```
 
 ### Field Notes
 
-- **ROOT_CA_NAME** — Controls the output directory (`./my-root-ca/`) and Root CA filenames.
+- **ROOT_CA_NAME** — Controls the output directory (`./certs/my-root-ca/`) and Root CA filenames.
 - **CERT_NAME** — Controls server certificate filenames (`my-local-cert.key`, `.csr`, `.crt`, etc.).
 - **CERT_DNS_NAMES** — Hostnames and IP addresses, comma-separated. IPs like `127.0.0.1` are automatically added as IP SAN entries.
 - **CERT_COMMON_NAME** — Must appear in `CERT_DNS_NAMES`.
 - **Values with spaces** — Work without quotes (e.g. `IT Department`). Quoting is optional.
 - **FORCE_REGENERATE** — When `no`, re-running with the same `CERT_NAME` skips generation and prints a message.
+- **WEBUI_BIND / WEBUI_PORT** — Host address and port used by `make webui`. `WEBUI_BIND` must stay `127.0.0.1`.
 
 ---
 
@@ -177,10 +196,10 @@ docker compose run --rm ssl-gen
 
 The tool creates a new Root CA and signs your first certificate. On success it prints validity dates and platform-specific trust commands.
 
-Output in `./<ROOT_CA_NAME>/`:
+Output in `./certs/<ROOT_CA_NAME>/`:
 
 ```
-my-root-ca/
+certs/my-root-ca/
 ├── my-root-ca.key
 ├── my-root-ca.crt
 ├── my-local-cert.key
@@ -216,7 +235,39 @@ FORCE_REGENERATE=no
 
 ---
 
-## 7. Using the Certificates
+## 7. Web UI
+
+The web UI is a separate container. It edits `.env`, runs certificate generation, and lists stores under `./certs/`. Start it with:
+
+```bash
+make webui
+```
+
+Or:
+
+```bash
+docker compose up --build -d webui
+```
+
+Open `https://127.0.0.1:8443` by default. The host address and port come from `WEBUI_BIND` and `WEBUI_PORT` in `.env` (see [Web UI Settings](#web-ui-settings)). `WEBUI_BIND` must be `127.0.0.1`. After changing either value, recreate the container so Docker republishes the port:
+
+```bash
+docker compose up --build -d webui
+```
+
+Stop the UI with:
+
+```bash
+make webui-down
+```
+
+On startup the UI creates its own self-signed HTTPS certificate in `ui-ssl/`. Accept that certificate in the browser to open the UI. To trust certificates you generate, install the Root CA from `./certs/<ROOT_CA_NAME>/`.
+
+Generated files still land in `./certs/<ROOT_CA_NAME>/` because the web UI bind-mounts the project directory at `/project`, the same way the `ssl-gen` service does.
+
+---
+
+## 8. Using the Certificates
 
 ### nginx
 
@@ -225,8 +276,8 @@ server {
     listen 443 ssl;
     server_name localhost;
 
-    ssl_certificate     /path/to/ssl-gen/my-root-ca/my-local-cert-fullchain.pem;
-    ssl_certificate_key /path/to/ssl-gen/my-root-ca/my-local-cert.key;
+    ssl_certificate     /path/to/ssl-gen/certs/my-root-ca/my-local-cert-fullchain.pem;
+    ssl_certificate_key /path/to/ssl-gen/certs/my-root-ca/my-local-cert.key;
 }
 ```
 
@@ -235,8 +286,8 @@ server {
 ```yaml
 tls:
   certificates:
-    - certFile: /path/to/ssl-gen/my-root-ca/my-local-cert.crt
-      keyFile: /path/to/ssl-gen/my-root-ca/my-local-cert.key
+    - certFile: /path/to/ssl-gen/certs/my-root-ca/my-local-cert.crt
+      keyFile: /path/to/ssl-gen/certs/my-root-ca/my-local-cert.key
 ```
 
 ### Node.js (HTTPS)
@@ -247,8 +298,8 @@ import { createServer } from "https";
 
 createServer(
   {
-    key: readFileSync("./my-root-ca/my-local-cert.key"),
-    cert: readFileSync("./my-root-ca/my-local-cert-fullchain.pem"),
+    key: readFileSync("./certs/my-root-ca/my-local-cert.key"),
+    cert: readFileSync("./certs/my-root-ca/my-local-cert-fullchain.pem"),
   },
   (req, res) => res.end("ok"),
 ).listen(443);
@@ -263,8 +314,8 @@ from http.server import HTTPServer, SimpleHTTPRequestHandler
 httpd = HTTPServer(("localhost", 443), SimpleHTTPRequestHandler)
 context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 context.load_cert_chain(
-    certfile="./my-root-ca/my-local-cert-fullchain.pem",
-    keyfile="./my-root-ca/my-local-cert.key",
+    certfile="./certs/my-root-ca/my-local-cert-fullchain.pem",
+    keyfile="./certs/my-root-ca/my-local-cert.key",
 )
 httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
 httpd.serve_forever()
@@ -274,20 +325,20 @@ Use the `-fullchain.pem` file when a service expects the server certificate bund
 
 ---
 
-## 8. Trusting the Root CA Locally
+## 9. Trusting the Root CA Locally
 
 Browsers and tools will not trust self-signed certificates until you install the Root CA. The generator prints exact commands after each run; these are the defaults:
 
 **macOS:**
 
 ```bash
-sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ./my-root-ca/my-root-ca.crt
+sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ./certs/my-root-ca/my-root-ca.crt
 ```
 
 **Linux (Debian/Ubuntu):**
 
 ```bash
-sudo cp ./my-root-ca/my-root-ca.crt /usr/local/share/ca-certificates/my-root-ca.crt
+sudo cp ./certs/my-root-ca/my-root-ca.crt /usr/local/share/ca-certificates/my-root-ca.crt
 sudo update-ca-certificates
 ```
 
@@ -295,7 +346,7 @@ sudo update-ca-certificates
 
 ---
 
-## 9. Security Notes
+## 10. Security Notes
 
 - Private keys (`.key`) and `.p12` files are created with `chmod 600`.
 - Root CA and server keys are stored in plain files on disk — restrict filesystem access to the output folder.
@@ -305,7 +356,7 @@ sudo update-ca-certificates
 
 ---
 
-## 10. Testing
+## 11. Testing
 
 Run the automated test suite locally:
 
@@ -319,7 +370,7 @@ CI runs the same tests on push and pull requests via GitHub Actions (`.github/wo
 
 ---
 
-## 11. Troubleshooting
+## 12. Troubleshooting
 
 | Issue | Solution |
 |-------|----------|
