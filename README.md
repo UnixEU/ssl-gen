@@ -272,6 +272,10 @@ httpd.serve_forever()
 
 Use the `-fullchain.pem` file when a service expects the server certificate bundled with the Root CA.
 
+### Web UI
+
+`make webui` serves a localhost-only interface (default `https://127.0.0.1:8443`). Open a Root CA or certificate to download its public `.crt`, full chain, and `.p12` when those files exist. Private `.key` downloads are opt-in: the button is marked secret and asks for confirmation before the file is saved. The dashboard lists Root CAs and certificates that are expired or within 30 days of `notAfter`.
+
 ---
 
 ## 8. Trusting the Root CA Locally

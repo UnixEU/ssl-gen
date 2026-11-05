@@ -3,6 +3,7 @@ const state = {
   sections: {},
   stores: [],
   activeView: "dashboard",
+  detail: null,
 };
 
 const viewMeta = {
@@ -100,10 +101,24 @@ const els = {
   testLog: document.getElementById("test-log"),
   storesList: document.getElementById("stores-list"),
   trustCommands: document.getElementById("trust-commands"),
+  dashboardExpiring: document.getElementById("dashboard-expiring"),
+  detailModal: document.getElementById("detail-modal"),
+  detailKicker: document.getElementById("detail-kicker"),
+  detailTitle: document.getElementById("detail-title"),
+  detailBody: document.getElementById("detail-body"),
+  detailFooter: document.getElementById("detail-footer"),
   toastStack: document.getElementById("toast-stack"),
   overlay: document.getElementById("overlay"),
   overlayMessage: document.getElementById("overlay-message"),
 };
+
+const EXPIRY_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+const ARTIFACTS = [
+  ["crt", ".crt"],
+  ["fullchain", "Full chain"],
+  ["p12", ".p12"],
+  ["key", ".key"],
+];
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -187,6 +202,172 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
+function expiryInfo(notAfter, now = Date.now()) {
+  const parsed = Date.parse(notAfter || "");
+  if (!notAfter || Number.isNaN(parsed)) {
+    return { status: "unknown", label: "Unknown", tone: "" };
+  }
+
+  const remaining = parsed - now;
+  if (remaining < 0) {
+    return { status: "expired", label: "Expired", tone: "danger" };
+  }
+  if (remaining <= EXPIRY_WINDOW_MS) {
+    return { status: "soon", label: "≤30d", tone: "warning" };
+  }
+  return { status: "ok", label: "OK", tone: "success" };
+}
+
+function notAfterTime(metadata) {
+  const parsed = Date.parse(metadata?.notAfter || "");
+  return Number.isNaN(parsed) ? Number.POSITIVE_INFINITY : parsed;
+}
+
+function compareByNotAfter(left, right) {
+  const delta = notAfterTime(left.metadata) - notAfterTime(right.metadata);
+  if (delta !== 0) {
+    return delta;
+  }
+  return String(left.name).localeCompare(String(right.name));
+}
+
+function formatDate(value) {
+  if (!value) {
+    return "Unknown";
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+  return parsed.toUTCString();
+}
+
+function renderExpiryBadge(notAfter) {
+  const expiry = expiryInfo(notAfter);
+  const tone = expiry.tone ? ` ${expiry.tone}` : "";
+  const title = notAfter ? formatDate(notAfter) : "Expiry date unavailable";
+  return `<span class="badge${tone}" title="${escapeHtml(title)}">${escapeHtml(expiry.label)}</span>`;
+}
+
+function expiryRowClass(notAfter) {
+  const status = expiryInfo(notAfter).status;
+  if (status === "soon" || status === "expired") {
+    return `expiry-${status}`;
+  }
+  return "";
+}
+
+function sortedStores() {
+  return [...state.stores].sort(compareByNotAfter);
+}
+
+function inventory() {
+  const items = [];
+  for (const store of state.stores) {
+    items.push({
+      kind: "root",
+      storeName: store.name,
+      certName: null,
+      name: store.name,
+      metadata: store.metadata,
+      artifacts: store.artifacts || {},
+      relativeCert: store.relativeCert || `./certs/${store.name}/${store.name}.crt`,
+    });
+    for (const cert of store.certificates) {
+      items.push({
+        kind: "certificate",
+        storeName: store.name,
+        certName: cert.name,
+        name: cert.name,
+        metadata: cert.metadata,
+        artifacts: cert.artifacts || {},
+        relativeCert: cert.relativeCert || `./certs/${store.name}/${cert.name}.crt`,
+      });
+    }
+  }
+  return items.sort(compareByNotAfter);
+}
+
+function expiringItems() {
+  return inventory().filter((item) => {
+    const status = expiryInfo(item.metadata?.notAfter).status;
+    return status === "soon" || status === "expired";
+  });
+}
+
+function renderDownloadButtons(storeName, certName, artifacts = {}) {
+  return ARTIFACTS.filter(([kind]) => artifacts[kind])
+    .map(([kind, label]) => {
+      const secret = kind === "key" ? `<span class="badge secret">secret</span>` : "";
+      const className =
+        kind === "key" ? "button button-secret button-small" : "button button-secondary button-small";
+      const certAttr = certName ? ` data-cert="${escapeHtml(certName)}"` : "";
+      const aria = kind === "key" ? ` aria-label="Download private key"` : "";
+      return `<button type="button" class="${className}" data-action="download" data-artifact="${kind}" data-store="${escapeHtml(storeName)}"${certAttr}${aria}>${label}${secret}</button>`;
+    })
+    .join("");
+}
+
+function renderDetailsButton(storeName, certName) {
+  const kind = certName ? "certificate" : "root";
+  const certAttr = certName ? ` data-cert="${escapeHtml(certName)}"` : "";
+  return `<button type="button" class="button button-secondary button-small" data-action="show-detail" data-kind="${kind}" data-store="${escapeHtml(storeName)}"${certAttr}>Details</button>`;
+}
+
+function downloadUrl(storeName, certName, artifact, confirm = false) {
+  const store = encodeURIComponent(storeName);
+  const kind = encodeURIComponent(artifact);
+  const path = certName
+    ? `/api/stores/${store}/certificates/${encodeURIComponent(certName)}/download/${kind}`
+    : `/api/stores/${store}/download/${kind}`;
+  return confirm ? `${path}?confirm=1` : path;
+}
+
+function filenameFor(storeName, certName, artifact) {
+  const base = certName || storeName;
+  if (artifact === "fullchain") {
+    return `${base}-fullchain.pem`;
+  }
+  if (artifact === "p12") {
+    return `${base}.p12`;
+  }
+  if (artifact === "key") {
+    return `${base}.key`;
+  }
+  return `${base}.crt`;
+}
+
+function filenameFromDisposition(header) {
+  const match = header?.match(/filename="([^"]+)"/);
+  return match?.[1] || "";
+}
+
+async function copyText(value, message) {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value);
+      showToast(message);
+      return;
+    } catch {
+      // Fall through to the selection fallback when the clipboard API is blocked.
+    }
+  }
+
+  const input = document.createElement("textarea");
+  input.value = value;
+  input.setAttribute("readonly", "");
+  input.style.position = "fixed";
+  input.style.left = "-9999px";
+  document.body.appendChild(input);
+  input.select();
+  const copied = document.execCommand("copy");
+  input.remove();
+  if (!copied) {
+    throw new Error("Could not copy to the clipboard");
+  }
+  showToast(message);
+}
+
 function renderFormSections(container, includeWebUi = false) {
   const sections = Object.entries(state.sections)
     .filter(([name]) => includeWebUi || name !== "webui")
@@ -219,27 +400,27 @@ function renderStats() {
     (count, store) => count + store.certificates.length,
     0,
   );
-  const expiringSoon = state.stores
-    .flatMap((store) => store.certificates)
-    .filter((cert) => {
-      const end = cert.metadata?.notAfter;
-      if (!end) return false;
-      const expiry = new Date(end);
-      const days = (expiry.getTime() - Date.now()) / (1000 * 60 * 60 * 24);
-      return days <= 30;
-    }).length;
+  const expiring = expiringItems();
+  const hasExpired = expiring.some(
+    (item) => expiryInfo(item.metadata?.notAfter).status === "expired",
+  );
+  const expiringClass = hasExpired
+    ? "stat-card attention-danger"
+    : expiring.length > 0
+      ? "stat-card attention"
+      : "stat-card";
 
   const cards = [
-    ["Root CAs", state.stores.length],
-    ["Certificates", totalCerts],
-    ["Current CA", state.config.ROOT_CA_NAME || "—"],
-    ["Expiring Soon", expiringSoon],
+    ["Root CAs", state.stores.length, "stat-card"],
+    ["Certificates", totalCerts, "stat-card"],
+    ["Current CA", state.config.ROOT_CA_NAME || "—", "stat-card"],
+    ["Expiring Soon", expiring.length, expiringClass],
   ];
 
   els.statsGrid.innerHTML = cards
     .map(
-      ([label, value]) => `
-        <article class="stat-card">
+      ([label, value, className]) => `
+        <article class="${className}">
           <p class="stat-label">${label}</p>
           <p class="stat-value">${escapeHtml(String(value))}</p>
         </article>
@@ -248,7 +429,47 @@ function renderStats() {
     .join("");
 }
 
+function renderExpiring() {
+  const items = expiringItems();
+  if (!els.dashboardExpiring) {
+    return;
+  }
+
+  if (items.length === 0) {
+    els.dashboardExpiring.innerHTML = `<p class="empty-state">Nothing is expired or due within 30 days.</p>`;
+    return;
+  }
+
+  els.dashboardExpiring.innerHTML = `<div class="cert-list">${items
+    .map((item) => {
+      const expiryClass = expiryRowClass(item.metadata?.notAfter);
+      const kindLabel = item.kind === "root" ? "Root CA" : `Certificate · ${item.storeName}`;
+      const certAttr = item.certName ? ` data-cert="${escapeHtml(item.certName)}"` : "";
+      return `
+        <div class="cert-row ${expiryClass}">
+          <div>
+            <button
+              type="button"
+              class="link-button"
+              data-action="show-detail"
+              data-kind="${item.kind}"
+              data-store="${escapeHtml(item.storeName)}"${certAttr}
+            >${escapeHtml(item.name)}</button>
+            <div class="meta-label">${escapeHtml(kindLabel)}</div>
+            <div class="meta-label">${escapeHtml(formatDate(item.metadata?.notAfter))}</div>
+          </div>
+          <div class="cert-actions">
+            ${renderExpiryBadge(item.metadata?.notAfter)}
+            ${renderDetailsButton(item.storeName, item.certName)}
+          </div>
+        </div>
+      `;
+    })
+    .join("")}</div>`;
+}
+
 function renderStoreCard(store, compact = false) {
+  const rootExpiryClass = expiryRowClass(store.metadata?.notAfter);
   const reuseStoreButton = compact
     ? ""
     : `<button
@@ -267,7 +488,8 @@ function renderStoreCard(store, compact = false) {
         type="button"
       >Delete Root CA</button>`;
 
-  const certs = store.certificates
+  const certs = [...store.certificates]
+    .sort(compareByNotAfter)
     .map((cert) => {
       const metadata = cert.metadata || {};
       const deleteCertButton = compact
@@ -279,18 +501,26 @@ function renderStoreCard(store, compact = false) {
             data-cert="${escapeHtml(cert.name)}"
             type="button"
           >Delete</button>`;
+      const downloads = renderDownloadButtons(store.name, cert.name, cert.artifacts);
 
       return `
-        <div class="cert-row">
+        <div class="cert-row ${expiryRowClass(metadata.notAfter)}">
           <div>
-            <strong>${escapeHtml(cert.name)}</strong>
+            <button
+              type="button"
+              class="link-button"
+              data-action="show-detail"
+              data-kind="certificate"
+              data-store="${escapeHtml(store.name)}"
+              data-cert="${escapeHtml(cert.name)}"
+            >${escapeHtml(cert.name)}</button>
             <div class="meta-label">${escapeHtml(formatSubject(metadata.subject))}</div>
             <div class="meta-label">${escapeHtml(metadata.subjectAltName || "No SAN data")}</div>
           </div>
           <div class="cert-actions">
-            <div class="badge ${cert.hasKey ? "success" : ""}">
-              ${escapeHtml(metadata.notAfter || "Unknown expiry")}
-            </div>
+            ${renderExpiryBadge(metadata.notAfter)}
+            ${downloads}
+            ${renderDetailsButton(store.name, cert.name)}
             ${deleteCertButton}
           </div>
         </div>
@@ -312,16 +542,26 @@ function renderStoreCard(store, compact = false) {
         </div>
       </div>`;
 
+  const rootDownloads = renderDownloadButtons(store.name, null, store.artifacts);
+
   return `
-    <article class="store-card">
+    <article class="store-card ${rootExpiryClass}">
       <div class="store-header">
         <div>
-          <h3>${escapeHtml(store.name)}</h3>
+          <h3><button
+            type="button"
+            class="link-button"
+            data-action="show-detail"
+            data-kind="root"
+            data-store="${escapeHtml(store.name)}"
+          >${escapeHtml(store.name)}</button></h3>
           <p class="meta-label">${escapeHtml(formatSubject(store.metadata?.subject))}</p>
           <p class="meta-label">${escapeHtml(store.relativePath || `./certs/${store.name}`)}</p>
         </div>
         <div class="store-actions">
+          ${renderExpiryBadge(store.metadata?.notAfter)}
           <span class="badge">${store.certificates.length} cert(s)</span>
+          ${renderDetailsButton(store.name, null)}
           ${reuseStoreButton}
           ${deleteStoreButton}
         </div>
@@ -329,8 +569,12 @@ function renderStoreCard(store, compact = false) {
       <div class="meta-list">
         <div class="meta-item">
           <span class="meta-label">Root CA valid until</span>
-          <span class="meta-value">${escapeHtml(store.metadata?.notAfter || "Unknown")}</span>
+          <span class="meta-value">${escapeHtml(formatDate(store.metadata?.notAfter))}</span>
         </div>
+      </div>
+      <div class="download-row">
+        <span class="meta-label">Root CA</span>
+        ${rootDownloads || `<span class="meta-label">No public artifacts</span>`}
       </div>
       ${filesSection}
       ${certSection}
@@ -339,21 +583,125 @@ function renderStoreCard(store, compact = false) {
 }
 
 function renderStores() {
-  if (state.stores.length === 0) {
+  renderExpiring();
+  const stores = sortedStores();
+
+  if (stores.length === 0) {
     const empty = `<p class="empty-state">No certificate stores found. Generate your first certificate to create <code>./certs/${escapeHtml(state.config.ROOT_CA_NAME || "my-root-ca")}/</code>.</p>`;
     els.dashboardStores.innerHTML = empty;
     els.storesList.innerHTML = `<article class="panel"><div class="panel-body">${empty}</div></article>`;
     return;
   }
 
-  els.dashboardStores.innerHTML = state.stores
+  els.dashboardStores.innerHTML = stores
     .slice(0, 2)
     .map((store) => renderStoreCard(store, true))
     .join("");
 
-  els.storesList.innerHTML = state.stores
-    .map((store) => renderStoreCard(store))
-    .join("");
+  els.storesList.innerHTML = stores.map((store) => renderStoreCard(store)).join("");
+}
+
+function findDetailRecord(kind, storeName, certName) {
+  const store = state.stores.find((entry) => entry.name === storeName);
+  if (!store) {
+    return null;
+  }
+
+  if (kind === "root") {
+    return {
+      kind: "root",
+      kicker: "Root CA",
+      title: store.name,
+      storeName: store.name,
+      certName: null,
+      metadata: store.metadata || {},
+      artifacts: store.artifacts || {},
+      relativeCert: store.relativeCert || `./certs/${store.name}/${store.name}.crt`,
+    };
+  }
+
+  const cert = store.certificates.find((entry) => entry.name === certName);
+  if (!cert) {
+    return null;
+  }
+
+  return {
+    kind: "certificate",
+    kicker: `Certificate · ${store.name}`,
+    title: cert.name,
+    storeName: store.name,
+    certName: cert.name,
+    metadata: cert.metadata || {},
+    artifacts: cert.artifacts || {},
+    relativeCert: cert.relativeCert || `./certs/${store.name}/${cert.name}.crt`,
+  };
+}
+
+function renderDetail() {
+  const detail = state.detail;
+  if (!detail) {
+    return;
+  }
+
+  const metadata = detail.metadata || {};
+  const san = metadata.subjectAltName || (detail.kind === "root" ? "None" : "No SAN data");
+  const fingerprint = metadata.fingerprint || "Unavailable";
+
+  els.detailKicker.textContent = detail.kicker;
+  els.detailTitle.textContent = detail.title;
+  els.detailBody.innerHTML = `
+    <dl class="detail-grid">
+      <div class="wide">
+        <dt>Subject</dt>
+        <dd>${escapeHtml(formatSubject(metadata.subject))}</dd>
+      </div>
+      <div class="wide">
+        <dt>SAN</dt>
+        <dd>${escapeHtml(san)}</dd>
+      </div>
+      <div>
+        <dt>Valid from</dt>
+        <dd>${escapeHtml(formatDate(metadata.notBefore))}</dd>
+      </div>
+      <div>
+        <dt>Expiry</dt>
+        <dd>${renderExpiryBadge(metadata.notAfter)} ${escapeHtml(formatDate(metadata.notAfter))}</dd>
+      </div>
+      <div class="wide">
+        <dt>SHA-256 fingerprint</dt>
+        <dd class="fingerprint">${escapeHtml(fingerprint)}</dd>
+      </div>
+      <div class="wide">
+        <dt>Path</dt>
+        <dd><code class="path-value">${escapeHtml(detail.relativeCert)}</code></dd>
+      </div>
+    </dl>
+    <div class="download-row">
+      <span class="meta-label">Download</span>
+      ${renderDownloadButtons(detail.storeName, detail.certName, detail.artifacts) || `<span class="meta-label">No artifacts available</span>`}
+    </div>
+  `;
+  els.detailFooter.innerHTML = `
+    <button type="button" class="button button-secondary" data-action="copy-path">Copy path</button>
+    <button type="button" class="button button-secondary" data-action="copy-pem">Copy public PEM</button>
+  `;
+}
+
+function openDetail(kind, storeName, certName) {
+  const record = findDetailRecord(kind, storeName, certName);
+  if (!record) {
+    showToast("That certificate is no longer available. Refresh and try again.", "error");
+    return;
+  }
+
+  state.detail = record;
+  renderDetail();
+  els.detailModal.hidden = false;
+}
+
+function closeDetail() {
+  state.detail = null;
+  els.detailModal.hidden = true;
 }
 
 function renderTrustGuide() {
@@ -570,6 +918,63 @@ async function handleDeleteCertificate(storeName, certName) {
   }
 }
 
+async function handleDownload(storeName, certName, artifact) {
+  if (artifact === "key") {
+    const label = certName ? `certificate '${certName}'` : `Root CA '${storeName}'`;
+    const confirmed = window.confirm(
+      `Download the private key for ${label}?\n\nThis file is secret. Anyone with it can impersonate this certificate.`,
+    );
+    if (!confirmed) {
+      return;
+    }
+  }
+
+  const response = await fetch(downloadUrl(storeName, certName, artifact, artifact === "key"));
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.message || "Download failed");
+  }
+
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const fileName =
+    filenameFromDisposition(response.headers.get("Content-Disposition")) ||
+    filenameFor(storeName, certName, artifact);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 1500);
+  showToast(artifact === "key" ? "Private key download started." : `Downloading ${fileName}.`);
+}
+
+async function handleCopyPath() {
+  if (!state.detail?.relativeCert) {
+    return;
+  }
+  await copyText(state.detail.relativeCert, "Path copied.");
+}
+
+async function handleCopyPem() {
+  if (!state.detail) {
+    return;
+  }
+  const response = await fetch(
+    downloadUrl(state.detail.storeName, state.detail.certName, "crt"),
+  );
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.message || "Could not read the public certificate");
+  }
+  const pem = await response.text();
+  if (!pem.includes("BEGIN CERTIFICATE")) {
+    throw new Error("Public certificate PEM was not available");
+  }
+  await copyText(pem, "Public PEM copied.");
+}
+
 function handleStoreAction(event) {
   const button = event.target.closest("[data-action]");
   if (!button) {
@@ -586,6 +991,18 @@ function handleStoreAction(event) {
     handleDeleteStore(storeName);
   } else if (action === "delete-cert" && storeName && certName) {
     handleDeleteCertificate(storeName, certName);
+  } else if (action === "show-detail" && storeName) {
+    openDetail(button.dataset.kind || (certName ? "certificate" : "root"), storeName, certName);
+  } else if (action === "download" && storeName && button.dataset.artifact) {
+    handleDownload(storeName, certName || null, button.dataset.artifact).catch((error) => {
+      showToast(error.message, "error");
+    });
+  } else if (action === "copy-path") {
+    handleCopyPath().catch((error) => showToast(error.message, "error"));
+  } else if (action === "copy-pem") {
+    handleCopyPem().catch((error) => showToast(error.message, "error"));
+  } else if (action === "close-detail") {
+    closeDetail();
   }
 }
 
@@ -625,6 +1042,13 @@ document.getElementById("reload-config-button").addEventListener("click", refres
 document.getElementById("run-tests-button").addEventListener("click", handleRunTests);
 els.storesList.addEventListener("click", handleStoreAction);
 els.dashboardStores.addEventListener("click", handleStoreAction);
+els.dashboardExpiring.addEventListener("click", handleStoreAction);
+els.detailModal.addEventListener("click", handleStoreAction);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !els.detailModal.hidden) {
+    closeDetail();
+  }
+});
 els.generateForm.addEventListener("submit", handleGenerate);
 els.configForm.addEventListener("submit", handleSaveConfig);
 

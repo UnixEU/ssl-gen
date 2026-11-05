@@ -5,6 +5,26 @@ const { execFileSync } = require("child_process");
 const CERTS_DIR_NAME = "certs";
 const SAFE_NAME_PATTERN = /^[a-zA-Z0-9._-]+$/;
 
+const DOWNLOAD_ARTIFACTS = {
+  crt: {
+    extension: ".crt",
+    contentType: "application/x-pem-file",
+  },
+  fullchain: {
+    extension: "-fullchain.pem",
+    contentType: "application/x-pem-file",
+  },
+  p12: {
+    extension: ".p12",
+    contentType: "application/x-pkcs12",
+  },
+  key: {
+    extension: ".key",
+    contentType: "application/octet-stream",
+    secret: true,
+  },
+};
+
 function getCertsRoot(projectRoot) {
   return path.join(projectRoot, CERTS_DIR_NAME);
 }
@@ -15,6 +35,17 @@ function validateSafeName(value, label) {
       `${label} may only contain letters, numbers, dots, underscores, and hyphens`,
     );
   }
+}
+
+function httpError(statusCode, message) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+}
+
+function withStatus(error, statusCode) {
+  error.statusCode = error.statusCode || statusCode;
+  return error;
 }
 
 function listEntries(dirPath) {
@@ -36,13 +67,25 @@ function readCertMetadata(certPath) {
   try {
     const text = execFileSync(
       "openssl",
-      ["x509", "-in", certPath, "-noout", "-subject", "-dates", "-ext", "subjectAltName"],
+      [
+        "x509",
+        "-in",
+        certPath,
+        "-noout",
+        "-subject",
+        "-dates",
+        "-fingerprint",
+        "-sha256",
+        "-ext",
+        "subjectAltName",
+      ],
       { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
     );
 
     const subject = (text.match(/subject=([^\n]+)/) || [])[1] ?? "";
     const notBefore = (text.match(/notBefore=([^\n]+)/) || [])[1] ?? "";
     const notAfter = (text.match(/notAfter=([^\n]+)/) || [])[1] ?? "";
+    const fingerprint = (text.match(/Fingerprint=([0-9A-Fa-f:]+)/i) || [])[1] ?? "";
     const sanMatch = text.match(/X509v3 Subject Alternative Name:\s*\n\s*([^\n]+)/);
     const subjectAltName = sanMatch ? sanMatch[1].trim() : "";
 
@@ -51,6 +94,7 @@ function readCertMetadata(certPath) {
       notBefore,
       notAfter,
       subjectAltName,
+      fingerprint,
     };
   } catch {
     return null;
@@ -72,6 +116,109 @@ function getStorePath(projectRoot, storeName) {
   }
 
   return storePath;
+}
+
+function listDownloadArtifacts(storePath, baseName) {
+  const artifacts = {};
+
+  for (const [kind, spec] of Object.entries(DOWNLOAD_ARTIFACTS)) {
+    const filePath = path.join(storePath, `${baseName}${spec.extension}`);
+
+    try {
+      artifacts[kind] = fs.lstatSync(filePath).isFile();
+    } catch {
+      artifacts[kind] = false;
+    }
+  }
+
+  return artifacts;
+}
+
+function relativeCertPath(storeName, baseName) {
+  return `./${CERTS_DIR_NAME}/${storeName}/${baseName}.crt`;
+}
+
+function isDirectChild(parent, candidate) {
+  return path.dirname(candidate) === parent;
+}
+
+function resolveDownloadArtifact(projectRoot, storeName, certName, artifact, options = {}) {
+  const spec = DOWNLOAD_ARTIFACTS[artifact];
+  if (!spec) {
+    throw httpError(400, "Unknown artifact");
+  }
+
+  try {
+    validateSafeName(storeName, "Store name");
+  } catch (error) {
+    throw withStatus(error, 400);
+  }
+
+  const baseName = certName || storeName;
+  if (certName) {
+    try {
+      validateSafeName(certName, "Certificate name");
+    } catch (error) {
+      throw withStatus(error, 400);
+    }
+  }
+
+  if (spec.secret && options.confirm !== true) {
+    throw httpError(400, "Private key download requires confirmation");
+  }
+
+  const certsRoot = path.resolve(getCertsRoot(projectRoot));
+  const storePath = path.resolve(certsRoot, storeName);
+  const fileName = `${baseName}${spec.extension}`;
+  const filePath = path.resolve(storePath, fileName);
+
+  if (!isDirectChild(certsRoot, storePath) || !isDirectChild(storePath, filePath)) {
+    throw httpError(400, "Artifact path escapes the certificate store");
+  }
+
+  let resolvedStore;
+  try {
+    resolvedStore = getStorePath(projectRoot, storeName);
+  } catch (error) {
+    throw withStatus(error, 404);
+  }
+
+  if (path.resolve(resolvedStore) !== storePath) {
+    throw httpError(400, "Artifact path escapes the certificate store");
+  }
+
+  let fileStat;
+  try {
+    fileStat = fs.lstatSync(filePath);
+  } catch {
+    throw httpError(404, "Artifact was not found");
+  }
+
+  if (!fileStat.isFile()) {
+    throw httpError(404, "Artifact was not found");
+  }
+
+  let certsRootReal;
+  let fileReal;
+  try {
+    certsRootReal = fs.realpathSync(certsRoot);
+    fileReal = fs.realpathSync(filePath);
+  } catch {
+    throw httpError(404, "Artifact was not found");
+  }
+
+  const relativeReal = path.relative(certsRootReal, fileReal);
+  const expected = path.join(storeName, fileName);
+  if (relativeReal !== expected) {
+    throw httpError(400, "Artifact path escapes the certificate store");
+  }
+
+  return {
+    filePath: fileReal,
+    fileName,
+    contentType: spec.contentType,
+    secret: Boolean(spec.secret),
+  };
 }
 
 function discoverStores(projectRoot) {
@@ -123,6 +270,8 @@ function discoverStores(projectRoot) {
             file.startsWith(`${certName}.`) || file === `${certName}-extensions.cnf`,
         ),
         hasKey: fs.existsSync(keyPath),
+        artifacts: listDownloadArtifacts(storePath, certName),
+        relativeCert: relativeCertPath(entry.name, certName),
         metadata,
       };
     });
@@ -131,8 +280,10 @@ function discoverStores(projectRoot) {
       name: entry.name,
       path: storePath,
       relativePath: `./${CERTS_DIR_NAME}/${entry.name}`,
+      relativeCert: relativeCertPath(entry.name, entry.name),
       rootCert: path.join(storePath, `${entry.name}.crt`),
       rootKey: path.join(storePath, `${entry.name}.key`),
+      artifacts: listDownloadArtifacts(storePath, entry.name),
       metadata: readCertMetadata(path.join(storePath, `${entry.name}.crt`)),
       certificates,
       files,
@@ -283,10 +434,12 @@ function buildReuseConfig(projectRoot, storeName, certDefaults = {}) {
 
 module.exports = {
   CERTS_DIR_NAME,
+  DOWNLOAD_ARTIFACTS,
   getCertsRoot,
   discoverStores,
   deleteStore,
   deleteCertificate,
   buildReuseConfig,
   readCertMetadata,
+  resolveDownloadArtifact,
 };
