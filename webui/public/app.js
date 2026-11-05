@@ -6,6 +6,7 @@ const state = {
   detail: null,
   archive: null,
   archivePreview: null,
+  hierarchyStore: "",
 };
 
 const viewMeta = {
@@ -20,6 +21,10 @@ const viewMeta = {
   stores: {
     title: "Certificates",
     description: "Browse Root CAs, export a TAR, or import an archive into ./certs.",
+  },
+  hierarchy: {
+    title: "Hierarchy",
+    description: "A Root CA at the top, with the certificates it signed underneath.",
   },
   config: {
     title: "Configuration",
@@ -102,6 +107,9 @@ const els = {
   generateLog: document.getElementById("generate-log"),
   testLog: document.getElementById("test-log"),
   storesList: document.getElementById("stores-list"),
+  hierarchySelect: document.getElementById("hierarchy-ca"),
+  hierarchySummary: document.getElementById("hierarchy-summary"),
+  hierarchyTree: document.getElementById("hierarchy-tree"),
   trustCommands: document.getElementById("trust-commands"),
   dashboardExpiring: document.getElementById("dashboard-expiring"),
   detailModal: document.getElementById("detail-modal"),
@@ -572,6 +580,15 @@ function renderStoreCard(store, compact = false) {
         </div>
       </div>`;
 
+  const hierarchyButton = compact
+    ? ""
+    : `<button
+        class="button button-secondary button-small"
+        data-action="show-hierarchy"
+        data-store="${escapeHtml(store.name)}"
+        type="button"
+      >Hierarchy</button>`;
+
   const rootDownloads = renderDownloadButtons(store.name, null, store.artifacts);
 
   return `
@@ -592,6 +609,7 @@ function renderStoreCard(store, compact = false) {
           ${renderExpiryBadge(store.metadata?.notAfter)}
           <span class="badge">${store.certificates.length} cert(s)</span>
           ${renderDetailsButton(store.name, null)}
+          ${hierarchyButton}
           <button
             class="button button-secondary button-small"
             data-action="export-archive"
@@ -627,6 +645,7 @@ function renderStores() {
     const empty = `<p class="empty-state">No certificate stores found. Generate your first certificate to create <code>./certs/${escapeHtml(state.config.ROOT_CA_NAME || "my-root-ca")}/</code>.</p>`;
     els.dashboardStores.innerHTML = empty;
     els.storesList.innerHTML = `<article class="panel"><div class="panel-body">${empty}</div></article>`;
+    renderHierarchy();
     return;
   }
 
@@ -636,6 +655,133 @@ function renderStores() {
     .join("");
 
   els.storesList.innerHTML = stores.map((store) => renderStoreCard(store)).join("");
+  renderHierarchy();
+}
+
+function selectedHierarchyName(stores) {
+  const names = new Set(stores.map((store) => store.name));
+  if (state.hierarchyStore && names.has(state.hierarchyStore)) {
+    return state.hierarchyStore;
+  }
+  if (state.config.ROOT_CA_NAME && names.has(state.config.ROOT_CA_NAME)) {
+    return state.config.ROOT_CA_NAME;
+  }
+  return stores[0]?.name || "";
+}
+
+function renderTreeNode(storeName, kind, name, metadata, extraBadge = "") {
+  const role = kind === "root" ? "Root CA" : "Certificate";
+  const commonName = metadata?.commonName
+    ? metadata.commonName
+    : metadata?.subject
+      ? formatSubject(metadata.subject)
+      : "No common name";
+  const certAttr = kind === "certificate" ? ` data-cert="${escapeHtml(name)}"` : "";
+  const expiryClass = expiryRowClass(metadata?.notAfter);
+
+  return `
+    <button
+      type="button"
+      class="tree-node ${kind === "root" ? "tree-node-root" : "tree-node-leaf"} ${expiryClass}"
+      data-action="show-detail"
+      data-kind="${kind}"
+      data-store="${escapeHtml(storeName)}"${certAttr}
+      aria-label="Open details for ${role} ${escapeHtml(name)}"
+    >
+      <span class="tree-node-kicker">
+        <span class="badge">${role}</span>
+        ${renderExpiryBadge(metadata?.notAfter)}
+        ${extraBadge}
+      </span>
+      <span class="tree-node-title">${escapeHtml(name)}</span>
+      <span class="tree-node-cn">${escapeHtml(commonName)}</span>
+    </button>
+  `;
+}
+
+function renderHierarchyTree(store) {
+  if (!store) {
+    els.hierarchySummary.textContent =
+      "Choose a Root CA to see the certificates stored under it.";
+    els.hierarchyTree.innerHTML = `<p class="empty-state">No Root CA stores found. Generate a certificate to create one under <code>./certs/</code>.</p>`;
+    return;
+  }
+
+  const children = [...store.certificates].sort((left, right) => {
+    if (Boolean(left.signedByRoot) !== Boolean(right.signedByRoot)) {
+      return left.signedByRoot ? -1 : 1;
+    }
+    return left.name.localeCompare(right.name);
+  });
+  const signed = children.filter((cert) => cert.signedByRoot).length;
+  const other = children.length - signed;
+  const location = store.relativePath || `./certs/${store.name}`;
+
+  if (children.length === 0) {
+    els.hierarchySummary.textContent = `${store.name} has no certificates in ${location}. Click the Root CA for details and downloads.`;
+  } else if (other > 0) {
+    els.hierarchySummary.textContent = `${signed} signed by this Root CA, ${other} with a different issuer, in ${location}. A dashed line marks an issuer that does not match. Click a node for details and downloads.`;
+  } else {
+    els.hierarchySummary.textContent = `${signed} certificate${signed === 1 ? "" : "s"} signed by this Root CA in ${location}. Click a node for details and downloads.`;
+  }
+
+  const branches =
+    children.length === 0
+      ? `<p class="empty-state hierarchy-empty">No signed certificates in this store yet.</p>`
+      : `<div class="hierarchy-stem" aria-hidden="true"></div>
+        <div class="hierarchy-children">
+          ${children
+            .map((cert) => {
+              const note = !cert.metadata
+                ? `<span class="badge warning">Unreadable</span>`
+                : cert.signedByRoot
+                  ? ""
+                  : `<span class="badge warning">Issuer differs</span>`;
+              return `
+                <div class="hierarchy-branch ${cert.signedByRoot ? "" : "unverified"}">
+                  ${renderTreeNode(store.name, "certificate", cert.name, cert.metadata, note)}
+                </div>
+              `;
+            })
+            .join("")}
+        </div>`;
+
+  els.hierarchyTree.innerHTML = `
+    <div class="hierarchy-scroll">
+      <div class="hierarchy" aria-label="Hierarchy for ${escapeHtml(store.name)}">
+        ${renderTreeNode(store.name, "root", store.name, store.metadata)}
+        ${branches}
+      </div>
+    </div>
+  `;
+}
+
+function renderHierarchy() {
+  if (!els.hierarchySelect || !els.hierarchyTree || !els.hierarchySummary) {
+    return;
+  }
+
+  const stores = [...state.stores].sort((left, right) => left.name.localeCompare(right.name));
+  const selected = selectedHierarchyName(stores);
+  state.hierarchyStore = selected;
+
+  if (stores.length === 0) {
+    els.hierarchySelect.disabled = true;
+    els.hierarchySelect.innerHTML = `<option value="">No Root CAs</option>`;
+    renderHierarchyTree(null);
+    return;
+  }
+
+  els.hierarchySelect.disabled = false;
+  els.hierarchySelect.innerHTML = stores
+    .map((store) => {
+      const label = `${store.name} (${store.certificates.length})`;
+      const isSelected = store.name === selected ? " selected" : "";
+      return `<option value="${escapeHtml(store.name)}"${isSelected}>${escapeHtml(label)}</option>`;
+    })
+    .join("");
+
+  renderHierarchyTree(stores.find((store) => store.name === selected) || null);
 }
 
 function findDetailRecord(kind, storeName, certName) {
@@ -1414,6 +1560,10 @@ function handleStoreAction(event) {
     handleDeleteCertificate(storeName, certName);
   } else if (action === "show-detail" && storeName) {
     openDetail(button.dataset.kind || (certName ? "certificate" : "root"), storeName, certName);
+  } else if (action === "show-hierarchy" && storeName) {
+    state.hierarchyStore = storeName;
+    renderHierarchy();
+    switchView("hierarchy");
   } else if (action === "export-archive" && button.dataset.scope) {
     openExport({
       scope: button.dataset.scope,
@@ -1469,6 +1619,11 @@ document.getElementById("reload-config-button").addEventListener("click", refres
 document.getElementById("run-tests-button").addEventListener("click", handleRunTests);
 els.storesList.addEventListener("click", handleStoreAction);
 els.dashboardStores.addEventListener("click", handleStoreAction);
+els.hierarchyTree.addEventListener("click", handleStoreAction);
+els.hierarchySelect.addEventListener("change", () => {
+  state.hierarchyStore = els.hierarchySelect.value;
+  renderHierarchy();
+});
 els.dashboardExpiring.addEventListener("click", handleStoreAction);
 els.detailModal.addEventListener("click", handleStoreAction);
 document.getElementById("dashboard-export-all-button").addEventListener("click", () => {

@@ -73,6 +73,7 @@ function readCertMetadata(certPath) {
         certPath,
         "-noout",
         "-subject",
+        "-issuer",
         "-dates",
         "-fingerprint",
         "-sha256",
@@ -83,6 +84,7 @@ function readCertMetadata(certPath) {
     );
 
     const subject = (text.match(/subject=([^\n]+)/) || [])[1] ?? "";
+    const issuer = (text.match(/issuer=([^\n]+)/) || [])[1] ?? "";
     const notBefore = (text.match(/notBefore=([^\n]+)/) || [])[1] ?? "";
     const notAfter = (text.match(/notAfter=([^\n]+)/) || [])[1] ?? "";
     const fingerprint = (text.match(/Fingerprint=([0-9A-Fa-f:]+)/i) || [])[1] ?? "";
@@ -91,6 +93,8 @@ function readCertMetadata(certPath) {
 
     return {
       subject,
+      issuer,
+      commonName: commonNameFromSubject(subject),
       notBefore,
       notAfter,
       subjectAltName,
@@ -224,6 +228,28 @@ function resolveDownloadArtifact(projectRoot, storeName, certName, artifact, opt
   };
 }
 
+function normalizeDn(value = "") {
+  return String(value)
+    .replace(/^(subject|issuer)=/i, "")
+    .trim()
+    .replace(/\s*=\s*/g, "=")
+    .replace(/\s*,\s*/g, ",")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+function commonNameFromSubject(subject = "") {
+  const cleaned = String(subject).replace(/^(subject|issuer)=/i, "").trim();
+  const match = cleaned.match(/(?:^|[,/])\s*CN\s*=\s*([^,/]+)/i);
+  return match ? match[1].trim() : "";
+}
+
+function signedByRootCa(rootMetadata, certMetadata) {
+  const rootDn = normalizeDn(rootMetadata?.subject || "");
+  const issuerDn = normalizeDn(certMetadata?.issuer || "");
+  return Boolean(rootDn) && issuerDn === rootDn;
+}
+
 function discoverStores(projectRoot) {
   const certsRoot = getCertsRoot(projectRoot);
 
@@ -245,6 +271,7 @@ function discoverStores(projectRoot) {
     }
 
     const files = listEntries(storePath);
+    const rootMetadata = readCertMetadata(path.join(storePath, `${entry.name}.crt`));
     const certNames = new Set();
 
     for (const file of files) {
@@ -275,6 +302,7 @@ function discoverStores(projectRoot) {
         hasKey: fs.existsSync(keyPath),
         artifacts: listDownloadArtifacts(storePath, certName),
         relativeCert: relativeCertPath(entry.name, certName),
+        signedByRoot: signedByRootCa(rootMetadata, metadata),
         metadata,
       };
     });
@@ -287,7 +315,7 @@ function discoverStores(projectRoot) {
       rootCert: path.join(storePath, `${entry.name}.crt`),
       rootKey: path.join(storePath, `${entry.name}.key`),
       artifacts: listDownloadArtifacts(storePath, entry.name),
-      metadata: readCertMetadata(path.join(storePath, `${entry.name}.crt`)),
+      metadata: rootMetadata,
       certificates,
       files,
     });
@@ -444,6 +472,7 @@ module.exports = {
   deleteCertificate,
   buildReuseConfig,
   readCertMetadata,
+  signedByRootCa,
   resolveDownloadArtifact,
   certificateFileNames,
   getCertsRoot,

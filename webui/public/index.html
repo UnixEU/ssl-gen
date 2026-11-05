@@ -42,6 +42,7 @@
           <button class="nav-link active" data-view="dashboard">Dashboard</button>
           <button class="nav-link" data-view="generate">Generate</button>
           <button class="nav-link" data-view="stores">Certificates</button>
+          <button class="nav-link" data-view="hierarchy">Hierarchy</button>
           <button class="nav-link" data-view="config">Configuration</button>
           <button class="nav-link" data-view="trust">Trust Guide</button>
         </nav>
@@ -166,6 +167,24 @@
             </div>
           </article>
           <div class="panel-grid single" id="stores-list"></div>
+        </section>
+
+        <section class="view" id="view-hierarchy">
+          <article class="panel hierarchy-panel">
+            <div class="panel-header">
+              <div>
+                <h2>Root CA hierarchy</h2>
+                <p class="panel-copy" id="hierarchy-summary">
+                  Choose a Root CA to see the certificates stored under it.
+                </p>
+              </div>
+              <label class="hierarchy-picker" for="hierarchy-ca">
+                <span>Root CA</span>
+                <select id="hierarchy-ca"></select>
+              </label>
+            </div>
+            <div class="panel-body hierarchy-canvas" id="hierarchy-tree"></div>
+          </article>
         </section>
 
         <section class="view" id="view-config">
