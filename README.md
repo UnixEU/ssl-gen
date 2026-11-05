@@ -271,6 +271,8 @@ The dashboard and Certificates page can also export a `.tar.gz` of one Root CA s
 
 The Hierarchy page draws one Root CA above the certificates in `./certs/<ROOT_CA_NAME>/`. A solid line means that certificate's issuer matches the selected Root CA. Click a node to open the same details and downloads as the Certificates page.
 
+Screen recordings and screenshots are in [docs/media](docs/media/).
+
 ---
 
 ## 8. Using the Certificates
