@@ -433,9 +433,6 @@ function buildReuseConfig(projectRoot, storeName, certDefaults = {}) {
 }
 
 module.exports = {
-  CERTS_DIR_NAME,
-  DOWNLOAD_ARTIFACTS,
-  getCertsRoot,
   discoverStores,
   deleteStore,
   deleteCertificate,

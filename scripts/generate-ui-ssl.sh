@@ -9,6 +9,7 @@ CERT_FILE="${UI_SSL_DIR}/server.crt"
 EXT_FILE="${UI_SSL_DIR}/server-extensions.cnf"
 
 if [ -f "${KEY_FILE}" ] && [ -f "${CERT_FILE}" ]; then
+  rm -f "${EXT_FILE}"
   echo "UI SSL certificate already exists in ui-ssl/"
   exit 0
 fi
@@ -47,4 +48,5 @@ openssl req -x509 -new -nodes \
   -extensions v3_server
 
 chmod 644 "${CERT_FILE}"
+rm -f "${EXT_FILE}"
 echo "UI SSL certificate created in ui-ssl/"

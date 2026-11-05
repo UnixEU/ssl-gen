@@ -40,11 +40,7 @@ if [ -d "${PROJECT_ROOT}/certs" ]; then
 fi
 
 mkdir -p "${PROJECT_ROOT}/certs"
-if [ -f "${PROJECT_ROOT}/certs/.gitkeep" ]; then
-  : # preserved when present in the template checkout
-else
-  : > "${PROJECT_ROOT}/certs/.gitkeep"
-fi
+: > "${PROJECT_ROOT}/certs/.gitkeep"
 echo "  Recreated empty certs/"
 
 if [ -f "${PROJECT_ROOT}/.env.test" ]; then

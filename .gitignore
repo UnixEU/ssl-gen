@@ -6,8 +6,8 @@
 # Web UI TLS material
 ui-ssl/
 
-# Installed when testing the web UI outside Docker
-webui/node_modules/
+# Web UI dependencies
+webui/node_modules
 
 # Generated Root CAs and certificates
 certs/*

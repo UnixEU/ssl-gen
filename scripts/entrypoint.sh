@@ -15,7 +15,7 @@ case "${cmd}" in
     exec /bin/sh "${PROJECT_ROOT}/scripts/generate-certs.sh"
     ;;
   test)
-    /bin/sh "${PROJECT_ROOT}/scripts/ensure-env.sh"
+    # test-inline.sh copies .env.example to .env.test and does not read .env
     exec /bin/sh "${PROJECT_ROOT}/scripts/test-inline.sh"
     ;;
   reset)
