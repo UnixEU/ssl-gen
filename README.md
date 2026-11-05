@@ -267,6 +267,8 @@ Generated files still land in `./certs/<ROOT_CA_NAME>/` because the web UI bind-
 
 From a Root CA or certificate you can download the public `.crt`, the full chain, and the `.p12` when those files exist. Private `.key` downloads are opt-in: the button is marked secret and asks for confirmation before the file is saved. The dashboard lists Root CAs and certificates that are expired or within 30 days of `notAfter`.
 
+The dashboard and Certificates page can also export a `.tar.gz` of one Root CA store, one certificate plus its public Root CA, or every store under `./certs`. Private keys and `.p12` files are omitted unless you include them, and you can encrypt the archive with an OpenSSL passphrase. Import previews the archive first, then skips, renames, or overwrites existing files. Imported files stay inside `./certs`.
+
 ---
 
 ## 8. Using the Certificates
@@ -351,6 +353,7 @@ sudo update-ca-certificates
 ## 10. Security Notes
 
 - Private keys (`.key`) and `.p12` files are created with `chmod 600`.
+- A TAR or `.tar.gz` export that includes private keys (`.key` or `.p12`) is a bundle of secrets. Do not commit it, email it, or leave it in a shared folder. Encrypting the archive does not make it safe to publish; keep the passphrase separate from the file. The manifest lists certificate names, file names, `notAfter`, and `exportedAt` only — it does not contain passphrases or PKCS#12 passwords. Import rejects paths outside `./certs`.
 - Root CA and server keys are stored in plain files on disk — restrict filesystem access to the output folder.
 - Set `ROOT_CA_PASSPHRASE` to encrypt the Root CA private key; you will need it when signing new certificates.
 - Self-signed certificates are intended for **local development and testing**, not production use.

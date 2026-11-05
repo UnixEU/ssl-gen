@@ -103,8 +103,11 @@ function readCertMetadata(certPath) {
 
 function isCertificateStore(storePath, storeName) {
   const rootCert = path.join(storePath, `${storeName}.crt`);
-  const rootKey = path.join(storePath, `${storeName}.key`);
-  return fs.existsSync(rootCert) && fs.existsSync(rootKey);
+  try {
+    return fs.statSync(rootCert).isFile();
+  } catch {
+    return false;
+  }
 }
 
 function getStorePath(projectRoot, storeName) {
@@ -398,6 +401,9 @@ function buildReuseConfig(projectRoot, storeName, certDefaults = {}) {
   const storePath = getStorePath(projectRoot, storeName);
   const rootKey = path.join(storePath, `${storeName}.key`);
   const rootCert = path.join(storePath, `${storeName}.crt`);
+  if (!fs.existsSync(rootKey)) {
+    throw httpError(400, "This Root CA has no private key in the store");
+  }
   const metadata = readCertMetadata(rootCert);
   const dn = parseSubjectDn(metadata?.subject || "");
 
@@ -439,4 +445,9 @@ module.exports = {
   buildReuseConfig,
   readCertMetadata,
   resolveDownloadArtifact,
+  certificateFileNames,
+  getCertsRoot,
+  getStorePath,
+  httpError,
+  validateSafeName,
 };

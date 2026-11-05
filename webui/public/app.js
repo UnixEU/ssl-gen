@@ -4,6 +4,8 @@ const state = {
   stores: [],
   activeView: "dashboard",
   detail: null,
+  archive: null,
+  archivePreview: null,
 };
 
 const viewMeta = {
@@ -17,7 +19,7 @@ const viewMeta = {
   },
   stores: {
     title: "Certificates",
-    description: "Browse generated Root CAs and signed certificates.",
+    description: "Browse Root CAs, export a TAR, or import an archive into ./certs.",
   },
   config: {
     title: "Configuration",
@@ -107,6 +109,11 @@ const els = {
   detailTitle: document.getElementById("detail-title"),
   detailBody: document.getElementById("detail-body"),
   detailFooter: document.getElementById("detail-footer"),
+  archiveModal: document.getElementById("archive-modal"),
+  archiveKicker: document.getElementById("archive-kicker"),
+  archiveTitle: document.getElementById("archive-title"),
+  archiveBody: document.getElementById("archive-body"),
+  archiveFooter: document.getElementById("archive-footer"),
   toastStack: document.getElementById("toast-stack"),
   overlay: document.getElementById("overlay"),
   overlayMessage: document.getElementById("overlay-message"),
@@ -337,6 +344,17 @@ function filenameFor(storeName, certName, artifact) {
   return `${base}.crt`;
 }
 
+function saveBlob(blob, fileName) {
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 1500);
+}
+
 function filenameFromDisposition(header) {
   const match = header?.match(/filename="([^"]+)"/);
   return match?.[1] || "";
@@ -470,9 +488,10 @@ function renderExpiring() {
 
 function renderStoreCard(store, compact = false) {
   const rootExpiryClass = expiryRowClass(store.metadata?.notAfter);
-  const reuseStoreButton = compact
-    ? ""
-    : `<button
+  const reuseStoreButton =
+    compact || !store.artifacts?.key
+      ? ""
+      : `<button
         class="button button-accent button-small"
         data-action="reuse-store"
         data-store="${escapeHtml(store.name)}"
@@ -502,6 +521,16 @@ function renderStoreCard(store, compact = false) {
             type="button"
           >Delete</button>`;
       const downloads = renderDownloadButtons(store.name, cert.name, cert.artifacts);
+      const exportCertButton = compact
+        ? ""
+        : `<button
+            class="button button-secondary button-small"
+            data-action="export-archive"
+            data-scope="certificate"
+            data-store="${escapeHtml(store.name)}"
+            data-cert="${escapeHtml(cert.name)}"
+            type="button"
+          >Export TAR</button>`;
 
       return `
         <div class="cert-row ${expiryRowClass(metadata.notAfter)}">
@@ -521,6 +550,7 @@ function renderStoreCard(store, compact = false) {
             ${renderExpiryBadge(metadata.notAfter)}
             ${downloads}
             ${renderDetailsButton(store.name, cert.name)}
+            ${exportCertButton}
             ${deleteCertButton}
           </div>
         </div>
@@ -562,6 +592,13 @@ function renderStoreCard(store, compact = false) {
           ${renderExpiryBadge(store.metadata?.notAfter)}
           <span class="badge">${store.certificates.length} cert(s)</span>
           ${renderDetailsButton(store.name, null)}
+          <button
+            class="button button-secondary button-small"
+            data-action="export-archive"
+            data-scope="store"
+            data-store="${escapeHtml(store.name)}"
+            type="button"
+          >Export TAR</button>
           ${reuseStoreButton}
           ${deleteStoreButton}
         </div>
@@ -936,17 +973,10 @@ async function handleDownload(storeName, certName, artifact) {
   }
 
   const blob = await response.blob();
-  const objectUrl = URL.createObjectURL(blob);
   const fileName =
     filenameFromDisposition(response.headers.get("Content-Disposition")) ||
     filenameFor(storeName, certName, artifact);
-  const link = document.createElement("a");
-  link.href = objectUrl;
-  link.download = fileName;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  setTimeout(() => URL.revokeObjectURL(objectUrl), 1500);
+  saveBlob(blob, fileName);
   showToast(artifact === "key" ? "Private key download started." : `Downloading ${fileName}.`);
 }
 
@@ -975,6 +1005,397 @@ async function handleCopyPem() {
   await copyText(pem, "Public PEM copied.");
 }
 
+function archiveScopeCopy(scope, storeName, certName) {
+  if (scope === "all") {
+    return "Every Root CA store under ./certs.";
+  }
+  if (scope === "store") {
+    return `Root CA store ./certs/${storeName}/.`;
+  }
+  return `Certificate ${certName} from ${storeName}, plus that store's public Root CA certificate.`;
+}
+
+function closeArchive() {
+  state.archive = null;
+  state.archivePreview = null;
+  if (els.archiveModal) {
+    els.archiveModal.hidden = true;
+    els.archiveBody.innerHTML = "";
+    els.archiveFooter.innerHTML = "";
+  }
+}
+
+function openExport(target) {
+  state.archive = {
+    mode: "export",
+    scope: target.scope,
+    storeName: target.storeName || null,
+    certName: target.certName || null,
+  };
+  state.archivePreview = null;
+  els.archiveKicker.textContent = "Export";
+  els.archiveTitle.textContent = "Export TAR";
+  els.archiveBody.innerHTML = `
+    <p class="panel-copy">${escapeHtml(archiveScopeCopy(target.scope, target.storeName, target.certName))}</p>
+    <div class="callout" id="archive-warning">
+      Private keys and PKCS#12 bundles stay out of the TAR unless you include them.
+      A TAR that contains <code>.key</code> or <code>.p12</code> files is a bundle of secrets:
+      anyone with the file can impersonate these certificates.
+      <p id="archive-key-warning" hidden>This download will include private keys.</p>
+    </div>
+    <div class="archive-options">
+      <label class="toggle">
+        <input type="checkbox" id="archive-include-keys" />
+        <span>Include private keys (.key and .p12)</span>
+      </label>
+      <label class="toggle">
+        <input type="checkbox" id="archive-encrypt" />
+        <span>Encrypt with OpenSSL AES-256</span>
+      </label>
+      <div class="field" id="archive-passphrase-field" hidden>
+        <label for="archive-passphrase">Archive passphrase</label>
+        <input id="archive-passphrase" type="password" autocomplete="new-password" />
+        <span class="meta-label">Used only for this download. It is not stored in the manifest.</span>
+      </div>
+    </div>
+  `;
+  els.archiveFooter.innerHTML = `
+    <button type="button" class="button button-secondary" data-action="close-archive">Cancel</button>
+    <button type="button" class="button button-primary" data-action="confirm-export">Download TAR</button>
+  `;
+  els.archiveModal.hidden = false;
+}
+
+function openImport() {
+  state.archive = { mode: "import" };
+  state.archivePreview = null;
+  els.archiveKicker.textContent = "Import";
+  els.archiveTitle.textContent = "Import TAR";
+  els.archiveBody.innerHTML = `
+    <p class="panel-copy">
+      Upload a <code>.tar</code> or <code>.tar.gz</code> archive. Files are extracted only into
+      <code>./certs/&lt;store&gt;/</code> after you preview them.
+    </p>
+    <div class="archive-options">
+      <div class="field">
+        <label for="archive-file">Archive</label>
+        <input id="archive-file" type="file" accept=".tar,.gz,.tgz,.enc,application/gzip,application/x-tar" />
+      </div>
+      <div class="field">
+        <label for="archive-passphrase">Passphrase</label>
+        <input id="archive-passphrase" type="password" autocomplete="current-password" />
+        <span class="meta-label">Required only when the archive was encrypted.</span>
+      </div>
+      <div class="field">
+        <label for="archive-policy">When a file already exists</label>
+        <select id="archive-policy">
+          <option value="skip" selected>Skip</option>
+          <option value="rename">Rename</option>
+          <option value="overwrite">Overwrite</option>
+        </select>
+      </div>
+      <label class="toggle" id="archive-overwrite-wrap" hidden>
+        <input type="checkbox" id="archive-overwrite-confirm" />
+        <span>Replace existing files in ./certs</span>
+      </label>
+    </div>
+    <div id="archive-preview" class="archive-preview"></div>
+  `;
+  els.archiveFooter.innerHTML = `
+    <button type="button" class="button button-secondary" data-action="close-archive">Cancel</button>
+    <button type="button" class="button button-secondary" data-action="preview-import">Preview</button>
+    <button type="button" class="button button-primary" data-action="confirm-import" disabled>Import</button>
+  `;
+  els.archiveModal.hidden = false;
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || "");
+      const comma = result.indexOf(",");
+      resolve(comma === -1 ? result : result.slice(comma + 1));
+    };
+    reader.onerror = () => reject(new Error("Could not read the archive"));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function readImportFile() {
+  const input = document.getElementById("archive-file");
+  const file = input?.files?.[0];
+  if (!file) {
+    throw new Error("Choose a TAR archive to import");
+  }
+  if (file.size > 32 * 1024 * 1024) {
+    throw new Error("Archive is too large");
+  }
+  return {
+    archiveBase64: await fileToBase64(file),
+    passphrase: document.getElementById("archive-passphrase")?.value || "",
+    policy: document.getElementById("archive-policy")?.value || "skip",
+    confirmOverwrite: Boolean(document.getElementById("archive-overwrite-confirm")?.checked),
+  };
+}
+
+function renderImportPreview(preview) {
+  const container = document.getElementById("archive-preview");
+  const importButton = els.archiveFooter.querySelector("[data-action='confirm-import']");
+  if (!container) {
+    return;
+  }
+
+  const summary = preview.summary || {};
+  const rows = (preview.files || [])
+    .map((file) => {
+      const secret = file.secret ? `<span class="badge secret">secret</span>` : "";
+      const destination =
+        file.destination && file.destination !== file.fileName
+          ? ` → ${file.destination}`
+          : "";
+      return `
+        <div class="archive-row">
+          <span>${escapeHtml(file.path)}${escapeHtml(destination)}</span>
+          <span class="cert-actions">
+            ${secret}
+            <span class="badge">${escapeHtml(file.action)}</span>
+          </span>
+        </div>
+      `;
+    })
+    .join("");
+
+  const encrypted = preview.encrypted
+    ? `<p class="meta-label">Encrypted archive decrypted for preview.</p>`
+    : "";
+  const secrets = (preview.files || []).some((file) => file.secret)
+    ? `<div class="callout danger">This archive contains private keys. Importing it writes those secrets into ./certs.</div>`
+    : "";
+
+  container.innerHTML = `
+    ${encrypted}
+    ${secrets}
+    <p class="meta-label">
+      ${summary.create || 0} new, ${summary.skip || 0} skipped,
+      ${summary.rename || 0} renamed, ${summary.overwrite || 0} overwritten.
+    </p>
+    <div class="archive-list">${rows}</div>
+  `;
+
+  if (importButton) {
+    importButton.disabled = !(preview.files || []).some((file) => file.action !== "skip");
+  }
+}
+
+async function postImport(pathname, fields) {
+  const response = await fetch(pathname, {
+    method: "POST",
+    headers: { "Content-Type": "application/vnd.ssl-gen.import+json" },
+    body: JSON.stringify(fields),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.message || "Import failed");
+  }
+  return payload;
+}
+
+async function handleConfirmExport() {
+  const archive = state.archive;
+  if (!archive || archive.mode !== "export") {
+    return;
+  }
+
+  const includeKeys = Boolean(document.getElementById("archive-include-keys")?.checked);
+  const encrypt = Boolean(document.getElementById("archive-encrypt")?.checked);
+  const passphrase = document.getElementById("archive-passphrase")?.value || "";
+
+  if (encrypt && passphrase.length === 0) {
+    showToast("Enter a passphrase to encrypt the archive.", "error");
+    return;
+  }
+
+  if (includeKeys) {
+    const confirmed = window.confirm(
+      "Include private keys in this TAR?\n\nThe archive will contain .key and .p12 files. Anyone who gets the file can impersonate these certificates.",
+    );
+    if (!confirmed) {
+      return;
+    }
+  }
+
+  setBusy(true, "Building archive...");
+  try {
+    const response = await fetch("/api/export", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        scope: archive.scope,
+        storeName: archive.storeName,
+        certName: archive.certName,
+        includeKeys,
+        confirmKeys: includeKeys,
+        encrypt,
+        passphrase: encrypt ? passphrase : "",
+      }),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.message || "Export failed");
+    }
+
+    const blob = await response.blob();
+    const fileName =
+      filenameFromDisposition(response.headers.get("Content-Disposition")) ||
+      "ssl-gen-certs.tar.gz";
+    const passphraseField = document.getElementById("archive-passphrase");
+    if (passphraseField) {
+      passphraseField.value = "";
+    }
+    setBusy(false);
+    closeArchive();
+    saveBlob(blob, fileName);
+    showToast(
+      includeKeys
+        ? "Archive download started. It contains private keys."
+        : `Downloading ${fileName}.`,
+    );
+  } catch (error) {
+    showToast(error.message, "error");
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function handlePreviewImport() {
+  setBusy(true, "Previewing archive...");
+  try {
+    const fields = await readImportFile();
+    const preview = await postImport("/api/import/preview", fields);
+    state.archivePreview = preview;
+    renderImportPreview(preview);
+  } catch (error) {
+    state.archivePreview = null;
+    const importButton = els.archiveFooter.querySelector("[data-action='confirm-import']");
+    if (importButton) {
+      importButton.disabled = true;
+    }
+    showToast(error.message, "error");
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function handleConfirmImport() {
+  const preview = state.archivePreview;
+  if (!preview) {
+    showToast("Preview the archive before importing.", "error");
+    return;
+  }
+
+  let fields;
+  try {
+    fields = await readImportFile();
+  } catch (error) {
+    showToast(error.message, "error");
+    return;
+  }
+
+  if (fields.policy !== preview.policy) {
+    showToast("Preview the archive again before importing.", "error");
+    return;
+  }
+
+  if ((preview.summary?.overwrite || 0) > 0 && !fields.confirmOverwrite) {
+    showToast("Confirm overwrite before replacing existing files.", "error");
+    return;
+  }
+
+  setBusy(true, "Importing archive...");
+  try {
+    const result = await postImport("/api/import", fields);
+    state.stores = result.stores || [];
+    renderStats();
+    renderStores();
+    renderTrustGuide();
+    const passphraseField = document.getElementById("archive-passphrase");
+    if (passphraseField) {
+      passphraseField.value = "";
+    }
+    closeArchive();
+    showToast(result.message || "Import completed.");
+  } catch (error) {
+    showToast(error.message, "error");
+  } finally {
+    setBusy(false);
+  }
+}
+
+function handleArchiveChange(event) {
+  if (event.target.id === "archive-include-keys") {
+    const warning = document.getElementById("archive-warning");
+    const extra = document.getElementById("archive-key-warning");
+    warning?.classList.toggle("danger", event.target.checked);
+    if (extra) {
+      extra.hidden = !event.target.checked;
+    }
+  }
+
+  if (event.target.id === "archive-encrypt") {
+    const field = document.getElementById("archive-passphrase-field");
+    if (field) {
+      field.hidden = !event.target.checked;
+    }
+  }
+
+  if (event.target.id === "archive-policy") {
+    const wrap = document.getElementById("archive-overwrite-wrap");
+    if (wrap) {
+      wrap.hidden = event.target.value !== "overwrite";
+    }
+    state.archivePreview = null;
+    const preview = document.getElementById("archive-preview");
+    if (preview) {
+      preview.innerHTML = "";
+    }
+    const importButton = els.archiveFooter.querySelector("[data-action='confirm-import']");
+    if (importButton) {
+      importButton.disabled = true;
+    }
+  }
+
+  if (event.target.id === "archive-file") {
+    state.archivePreview = null;
+    const preview = document.getElementById("archive-preview");
+    if (preview) {
+      preview.innerHTML = "";
+    }
+    const importButton = els.archiveFooter.querySelector("[data-action='confirm-import']");
+    if (importButton) {
+      importButton.disabled = true;
+    }
+  }
+}
+
+function handleArchiveClick(event) {
+  const button = event.target.closest("[data-action]");
+  if (!button || !els.archiveModal.contains(button)) {
+    return;
+  }
+
+  const action = button.dataset.action;
+  if (action === "close-archive") {
+    closeArchive();
+  } else if (action === "confirm-export") {
+    handleConfirmExport();
+  } else if (action === "preview-import") {
+    handlePreviewImport();
+  } else if (action === "confirm-import") {
+    handleConfirmImport();
+  }
+}
+
 function handleStoreAction(event) {
   const button = event.target.closest("[data-action]");
   if (!button) {
@@ -993,6 +1414,12 @@ function handleStoreAction(event) {
     handleDeleteCertificate(storeName, certName);
   } else if (action === "show-detail" && storeName) {
     openDetail(button.dataset.kind || (certName ? "certificate" : "root"), storeName, certName);
+  } else if (action === "export-archive" && button.dataset.scope) {
+    openExport({
+      scope: button.dataset.scope,
+      storeName,
+      certName: certName || null,
+    });
   } else if (action === "download" && storeName && button.dataset.artifact) {
     handleDownload(storeName, certName || null, button.dataset.artifact).catch((error) => {
       showToast(error.message, "error");
@@ -1044,8 +1471,25 @@ els.storesList.addEventListener("click", handleStoreAction);
 els.dashboardStores.addEventListener("click", handleStoreAction);
 els.dashboardExpiring.addEventListener("click", handleStoreAction);
 els.detailModal.addEventListener("click", handleStoreAction);
+document.getElementById("dashboard-export-all-button").addEventListener("click", () => {
+  openExport({ scope: "all" });
+});
+document.getElementById("dashboard-import-button").addEventListener("click", openImport);
+document.getElementById("stores-export-all-button").addEventListener("click", () => {
+  openExport({ scope: "all" });
+});
+document.getElementById("stores-import-button").addEventListener("click", openImport);
+els.archiveModal.addEventListener("click", handleArchiveClick);
+els.archiveModal.addEventListener("change", handleArchiveChange);
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && !els.detailModal.hidden) {
+  if (event.key !== "Escape") {
+    return;
+  }
+  if (els.archiveModal && !els.archiveModal.hidden) {
+    closeArchive();
+    return;
+  }
+  if (!els.detailModal.hidden) {
     closeDetail();
   }
 });

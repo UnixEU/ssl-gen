@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run web UI download tests
+      - name: Run web UI tests
         working-directory: webui
         run: |
           npm install --omit=dev
