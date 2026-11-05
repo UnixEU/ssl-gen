@@ -11,5 +11,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Run web UI download tests
+        working-directory: webui
+        run: |
+          npm install --omit=dev
+          npm test
+
       - name: Run certificate generation tests
         run: docker compose run --rm ssl-gen test

@@ -265,6 +265,8 @@ On startup the UI creates its own self-signed HTTPS certificate in `ui-ssl/`. Ac
 
 Generated files still land in `./certs/<ROOT_CA_NAME>/` because the web UI bind-mounts the project directory at `/project`, the same way the `ssl-gen` service does.
 
+From a Root CA or certificate you can download the public `.crt`, the full chain, and the `.p12` when those files exist. Private `.key` downloads are opt-in: the button is marked secret and asks for confirmation before the file is saved. The dashboard lists Root CAs and certificates that are expired or within 30 days of `notAfter`.
+
 ---
 
 ## 8. Using the Certificates

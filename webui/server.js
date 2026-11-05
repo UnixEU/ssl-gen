@@ -13,6 +13,7 @@ const {
   deleteStore,
   deleteCertificate,
   buildReuseConfig,
+  resolveDownloadArtifact,
 } = require("./lib/certs");
 const { runScript, getLastOutput, isRunning } = require("./lib/runner");
 
@@ -127,6 +128,45 @@ app.delete(
   }),
 );
 
+function sendArtifact(res, artifact) {
+  res.setHeader("Content-Type", artifact.contentType);
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="${artifact.fileName}"; filename*=UTF-8''${encodeURIComponent(artifact.fileName)}`,
+  );
+  res.sendFile(artifact.filePath, { dotfiles: "deny" }, (error) => {
+    if (!error || res.headersSent) {
+      return;
+    }
+
+    console.error(error);
+    res.status(404).json({ message: "Artifact was not found" });
+  });
+}
+
+function downloadHandler(readCertName) {
+  return asyncHandler(async (req, res) => {
+    const confirmed = req.query.confirm === "1";
+    const artifact = resolveDownloadArtifact(
+      PROJECT_ROOT,
+      req.params.storeName,
+      readCertName ? req.params.certName : null,
+      req.params.artifact,
+      { confirm: confirmed },
+    );
+    sendArtifact(res, artifact);
+  });
+}
+
+app.get("/api/stores/:storeName/download/:artifact", downloadHandler(false));
+
+app.get(
+  "/api/stores/:storeName/certificates/:certName/download/:artifact",
+  downloadHandler(true),
+);
+
 app.delete(
   "/api/stores/:storeName/certificates/:certName",
   asyncHandler(async (req, res) => {
@@ -221,8 +261,14 @@ app.post(
 );
 
 app.use((error, _req, res, _next) => {
-  console.error(error);
-  res.status(500).json({
+  const status = error.statusCode || 500;
+  if (status >= 500) {
+    console.error(error);
+  }
+  if (res.headersSent) {
+    return;
+  }
+  res.status(status).json({
     message: error.message || "Internal server error",
   });
 });
@@ -231,21 +277,29 @@ app.use((_req, res) => {
   res.sendFile(path.join(PUBLIC_DIR, "index.html"));
 });
 
-if (!fs.existsSync(UI_SSL_KEY) || !fs.existsSync(UI_SSL_CERT)) {
-  console.error("UI SSL certificate not found. Run scripts/generate-ui-ssl.sh first.");
-  process.exit(1);
+function start() {
+  if (!fs.existsSync(UI_SSL_KEY) || !fs.existsSync(UI_SSL_CERT)) {
+    console.error("UI SSL certificate not found. Run scripts/generate-ui-ssl.sh first.");
+    process.exit(1);
+  }
+
+  https
+    .createServer(
+      {
+        key: fs.readFileSync(UI_SSL_KEY),
+        cert: fs.readFileSync(UI_SSL_CERT),
+      },
+      app,
+    )
+    .listen(INTERNAL_PORT, "0.0.0.0", () => {
+      const config = readEnvFile(ENV_PATH);
+      console.log(`ssl-gen web UI listening on port ${INTERNAL_PORT}`);
+      console.log(`Open ${getWebUiUrl(config)} from the Docker host`);
+    });
 }
 
-https
-  .createServer(
-    {
-      key: fs.readFileSync(UI_SSL_KEY),
-      cert: fs.readFileSync(UI_SSL_CERT),
-    },
-    app,
-  )
-  .listen(INTERNAL_PORT, "0.0.0.0", () => {
-    const config = readEnvFile(ENV_PATH);
-    console.log(`ssl-gen web UI listening on port ${INTERNAL_PORT}`);
-    console.log(`Open ${getWebUiUrl(config)} from the Docker host`);
-  });
+if (require.main === module) {
+  start();
+}
+
+module.exports = { app };
