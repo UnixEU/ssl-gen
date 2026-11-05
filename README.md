@@ -269,6 +269,8 @@ From a Root CA or certificate you can download the public `.crt`, the full chain
 
 The dashboard and Certificates page can also export a `.tar.gz` of one Root CA store, one certificate plus its public Root CA, or every store under `./certs`. Private keys and `.p12` files are omitted unless you include them, and you can encrypt the archive with an OpenSSL passphrase. Import previews the archive first, then skips, renames, or overwrites existing files. Imported files stay inside `./certs`.
 
+The Hierarchy page draws one Root CA above the certificates in `./certs/<ROOT_CA_NAME>/`. A solid line means that certificate's issuer matches the selected Root CA. Click a node to open the same details and downloads as the Certificates page.
+
 ---
 
 ## 8. Using the Certificates
