@@ -15,6 +15,7 @@ const {
   buildReuseConfig,
   resolveDownloadArtifact,
 } = require("./lib/certs");
+const { exportArchive, previewImport, applyImport } = require("./lib/archive");
 const { runScript, getLastOutput, isRunning } = require("./lib/runner");
 
 const PROJECT_ROOT = process.env.PROJECT_ROOT || "/project";
@@ -160,6 +161,101 @@ function downloadHandler(readCertName) {
   });
 }
 
+const importParser = express.raw({
+  type: "application/vnd.ssl-gen.import+json",
+  limit: "48mb",
+});
+
+function readImportPayload(req) {
+  if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+    const error = new Error("Import request is empty");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  let payload;
+  try {
+    payload = JSON.parse(req.body.toString("utf8"));
+  } catch {
+    const error = new Error("Import request is not valid JSON");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (!payload || typeof payload.archiveBase64 !== "string" || payload.archiveBase64.length === 0) {
+    const error = new Error("Archive upload is required");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const buffer = Buffer.from(payload.archiveBase64, "base64");
+  if (buffer.length === 0) {
+    const error = new Error("Archive upload is empty");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return { payload, buffer };
+}
+
+function importOptions(payload) {
+  return {
+    policy: payload.policy,
+    passphrase: typeof payload.passphrase === "string" ? payload.passphrase : "",
+    confirmOverwrite: payload.confirmOverwrite === true,
+  };
+}
+
+app.post(
+  "/api/export",
+  asyncHandler(async (req, res) => {
+    const archive = exportArchive(PROJECT_ROOT, {
+      scope: req.body?.scope,
+      storeName: req.body?.storeName,
+      certName: req.body?.certName,
+      includeKeys: req.body?.includeKeys === true,
+      confirmKeys: req.body?.confirmKeys === true,
+      encrypt: req.body?.encrypt === true,
+      passphrase: typeof req.body?.passphrase === "string" ? req.body.passphrase : "",
+    });
+
+    res.setHeader(
+      "Content-Type",
+      archive.encrypted ? "application/octet-stream" : "application/gzip",
+    );
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${archive.fileName}"; filename*=UTF-8''${encodeURIComponent(archive.fileName)}`,
+    );
+    res.send(archive.data);
+  }),
+);
+
+app.post(
+  "/api/import/preview",
+  importParser,
+  asyncHandler(async (req, res) => {
+    const { payload, buffer } = readImportPayload(req);
+    res.json(previewImport(PROJECT_ROOT, buffer, importOptions(payload)));
+  }),
+);
+
+app.post(
+  "/api/import",
+  importParser,
+  asyncHandler(async (req, res) => {
+    const { payload, buffer } = readImportPayload(req);
+    const result = applyImport(PROJECT_ROOT, buffer, importOptions(payload));
+    const written = result.summary.create + result.summary.rename + result.summary.overwrite;
+    res.json({
+      ...result,
+      message: `Imported ${written} file(s). Skipped ${result.summary.skip}.`,
+    });
+  }),
+);
+
 app.get("/api/stores/:storeName/download/:artifact", downloadHandler(false));
 
 app.get(
@@ -261,7 +357,7 @@ app.post(
 );
 
 app.use((error, _req, res, _next) => {
-  const status = error.statusCode || 500;
+  const status = error.statusCode || error.status || 500;
   if (status >= 500) {
     console.error(error);
   }
