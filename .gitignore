@@ -6,6 +6,9 @@
 # Web UI TLS material
 ui-ssl/
 
+# Web UI dependencies
+webui/node_modules
+
 # Generated Root CAs and certificates
 certs/*
 !certs/.gitkeep
