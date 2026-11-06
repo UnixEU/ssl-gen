@@ -271,6 +271,8 @@ The dashboard and Certificates page can also export a `.tar.gz` of one Root CA s
 
 The Hierarchy page draws one Root CA above the certificates in `./certs/<ROOT_CA_NAME>/`. A solid line means that certificate's issuer matches the selected Root CA. Click a node to open the same details and downloads as the Certificates page.
 
+Generate can start from a preset — localhost, a `*.local` name plus an optional LAN IP, or a wildcard such as `*.dev.local` — with Root CA, certificate, and advanced settings in collapsible sections. Trust Guide copies the macOS, Linux, and Windows install commands and downloads only the public Root CA `.crt`. The Certificates page filters stores by name, subject, or SAN.
+
 Screen recordings and screenshots are in [docs/media](docs/media/).
 
 ---

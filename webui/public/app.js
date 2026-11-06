@@ -1,3 +1,6 @@
+import { buildPreset, isIpAddress } from "./presets.js";
+import { trustCommandsFor } from "./trust-commands.js";
+
 const state = {
   config: {},
   sections: {},
@@ -7,7 +10,13 @@ const state = {
   archive: null,
   archivePreview: null,
   hierarchyStore: "",
+  trustStore: "",
+  storeQuery: "",
+  activePreset: "",
+  generateOpen: null,
 };
+
+let applyingPreset = false;
 
 const viewMeta = {
   dashboard: {
@@ -16,11 +25,11 @@ const viewMeta = {
   },
   generate: {
     title: "Generate Certificate",
-    description: "Create or reuse a Root CA and sign a new server certificate.",
+    description: "Start from a preset, or open a section and sign a certificate with your Root CA.",
   },
   stores: {
     title: "Certificates",
-    description: "Browse Root CAs, export a TAR, or import an archive into ./certs.",
+    description: "Search Root CAs, export a TAR, or import an archive into ./certs.",
   },
   hierarchy: {
     title: "Hierarchy",
@@ -32,7 +41,7 @@ const viewMeta = {
   },
   trust: {
     title: "Trust Guide",
-    description: "Install your Root CA locally and run the automated test suite.",
+    description: "Copy install commands and download the public Root CA certificate.",
   },
 };
 
@@ -111,6 +120,10 @@ const els = {
   hierarchySummary: document.getElementById("hierarchy-summary"),
   hierarchyTree: document.getElementById("hierarchy-tree"),
   trustCommands: document.getElementById("trust-commands"),
+  trustSelect: document.getElementById("trust-ca"),
+  trustDownload: document.getElementById("trust-download"),
+  storeSearch: document.getElementById("store-search"),
+  storeSearchCount: document.getElementById("store-search-count"),
   dashboardExpiring: document.getElementById("dashboard-expiring"),
   detailModal: document.getElementById("detail-modal"),
   detailKicker: document.getElementById("detail-kicker"),
@@ -155,12 +168,32 @@ async function api(path, options = {}) {
   return payload;
 }
 
+const TOAST_LABELS = {
+  success: "Success",
+  error: "Error",
+  warning: "Warning",
+  info: "Info",
+};
+
 function showToast(message, type = "success") {
+  const kind = TOAST_LABELS[type] ? type : "info";
   const toast = document.createElement("div");
-  toast.className = `toast ${type}`;
-  toast.textContent = message;
+  toast.className = `toast toast-${kind}`;
+  toast.setAttribute("role", kind === "error" || kind === "warning" ? "alert" : "status");
+
+  const kicker = document.createElement("span");
+  kicker.className = "toast-kicker";
+  kicker.textContent = TOAST_LABELS[kind];
+
+  const body = document.createElement("p");
+  body.className = "toast-message";
+  body.textContent = message;
+
+  toast.append(kicker, body);
+  toast.addEventListener("click", () => toast.remove());
   els.toastStack.appendChild(toast);
-  setTimeout(() => toast.remove(), 4200);
+  const duration = kind === "error" || kind === "warning" ? 6400 : 4200;
+  setTimeout(() => toast.remove(), duration);
 }
 
 function setBusy(active, message = "Working...") {
@@ -394,20 +427,135 @@ async function copyText(value, message) {
   showToast(message);
 }
 
-function renderFormSections(container, includeWebUi = false) {
+function sectionSummary(name, values) {
+  if (name === "rootCa") {
+    return values.ROOT_CA_NAME || "Unset";
+  }
+  if (name === "certificate") {
+    return values.CERT_COMMON_NAME || values.CERT_NAME || "Unset";
+  }
+  if (name === "advanced") {
+    return `${values.KEY_TYPE || "ec"} · regenerate ${values.FORCE_REGENERATE || "no"}`;
+  }
+  if (name === "webui") {
+    return `${values.WEBUI_BIND || "127.0.0.1"}:${values.WEBUI_PORT || "8443"}`;
+  }
+  return "";
+}
+
+function defaultGenerateOpen() {
+  const name = state.config.ROOT_CA_NAME;
+  const exists = state.stores.some((store) => store.name === name);
+  return { rootCa: !exists, certificate: true, advanced: false };
+}
+
+function refreshSectionSummaries() {
+  if (!els.generateForm) {
+    return;
+  }
+  const values = readFormValues(els.generateForm);
+  els.generateFields.querySelectorAll("[data-summary]").forEach((node) => {
+    node.textContent = sectionSummary(node.dataset.summary, values);
+  });
+}
+
+function renderFormSections(container, options = {}) {
+  const includeWebUi = options.includeWebUi === true;
+  const collapsible = options.collapsible === true;
+  const formPrefix = options.prefix || (includeWebUi ? "config" : "generate");
+  const openState = collapsible ? state.generateOpen || defaultGenerateOpen() : null;
+
   const sections = Object.entries(state.sections)
     .filter(([name]) => includeWebUi || name !== "webui")
     .map(([name, section]) => {
-      const fields = section.keys.map((key) => renderField(key, name)).join("");
+      const fields = section.keys.map((key) => renderField(key, `${formPrefix}-${name}`)).join("");
+      if (!collapsible) {
+        return `
+          <section class="form-section">
+            <h3>${escapeHtml(section.title)}</h3>
+            <div class="field-grid">${fields}</div>
+          </section>
+        `;
+      }
+
+      const isOpen = Object.prototype.hasOwnProperty.call(openState, name)
+        ? openState[name]
+        : name !== "advanced";
       return `
-        <section class="form-section">
-          <h3>${section.title}</h3>
+        <details class="form-section" data-section="${name}"${isOpen ? " open" : ""}>
+          <summary>
+            <span class="section-title">${escapeHtml(section.title)}</span>
+            <span class="section-summary" data-summary="${name}">${escapeHtml(sectionSummary(name, state.config))}</span>
+          </summary>
           <div class="field-grid">${fields}</div>
-        </section>
+        </details>
       `;
     });
 
   container.innerHTML = sections.join("");
+  if (collapsible) {
+    refreshSectionSummaries();
+  }
+}
+
+function updatePresetChrome() {
+  document.querySelectorAll(".preset-chip").forEach((button) => {
+    const active = button.dataset.preset === state.activePreset;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+
+  const lan = document.getElementById("preset-lan");
+  const wildcard = document.getElementById("preset-wildcard");
+  if (lan) {
+    lan.hidden = state.activePreset !== "lan";
+  }
+  if (wildcard) {
+    wildcard.hidden = state.activePreset !== "wildcard";
+  }
+}
+
+function applyPreset(id, { quiet = false } = {}) {
+  const lanIp = document.getElementById("preset-lan-ip")?.value || "";
+  const apex = document.getElementById("preset-wildcard-base")?.value || "";
+  const result = buildPreset(id, { lanIp, apex });
+  if (result.error) {
+    if (!quiet) {
+      showToast(result.error, "warning");
+    }
+    return;
+  }
+
+  applyingPreset = true;
+  for (const [key, value] of Object.entries(result.values)) {
+    const field = els.generateForm.elements.namedItem(key);
+    if (field && "value" in field) {
+      field.value = value;
+    }
+  }
+  applyingPreset = false;
+
+  state.activePreset = id;
+  updatePresetChrome();
+  const certificate = els.generateFields.querySelector('details[data-section="certificate"]');
+  if (certificate) {
+    certificate.open = true;
+    state.generateOpen = {
+      ...(state.generateOpen || defaultGenerateOpen()),
+      certificate: true,
+    };
+  }
+  refreshSectionSummaries();
+
+  const preview = document.getElementById("preset-wildcard-preview");
+  const apexName = result.values.CERT_DNS_NAMES?.split(",").pop();
+  if (preview && apexName && id === "wildcard") {
+    preview.textContent = apexName;
+  }
+
+  if (!quiet) {
+    showToast(result.message, "info");
+  }
 }
 
 function readFormValues(form) {
@@ -569,7 +717,17 @@ function renderStoreCard(store, compact = false) {
   const certSection =
     store.certificates.length > 0
       ? `<div class="cert-list">${certs}</div>`
-      : `<p class="empty-state">No signed certificates yet.</p>`;
+      : compact
+        ? `<p class="empty-state">No signed certificates yet.</p>`
+        : `<div class="empty-state empty-cta">
+            <p>No signed certificates yet.</p>
+            <button
+              type="button"
+              class="button button-accent button-small"
+              data-action="reuse-store"
+              data-store="${escapeHtml(store.name)}"
+            >Generate a certificate</button>
+          </div>`;
 
   const filesSection = compact
     ? ""
@@ -637,12 +795,82 @@ function renderStoreCard(store, compact = false) {
   `;
 }
 
+function storeSearchText(store) {
+  return [
+    store.name,
+    store.relativePath,
+    store.metadata?.subject,
+    store.metadata?.subjectAltName,
+    store.metadata?.fingerprint,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function certificateSearchText(cert) {
+  return [cert.name, cert.metadata?.subject, cert.metadata?.subjectAltName, cert.metadata?.fingerprint]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function storesForQuery(stores, query) {
+  const needle = String(query || "").trim().toLowerCase();
+  if (!needle) {
+    return stores.map((store) => ({ store, certificates: store.certificates }));
+  }
+
+  const matches = [];
+  for (const store of stores) {
+    if (storeSearchText(store).includes(needle)) {
+      matches.push({ store, certificates: store.certificates });
+      continue;
+    }
+    const certificates = store.certificates.filter((cert) =>
+      certificateSearchText(cert).includes(needle),
+    );
+    if (certificates.length > 0) {
+      matches.push({ store, certificates });
+    }
+  }
+  return matches;
+}
+
+function emptyStoresMarkup() {
+  const folder = escapeHtml(state.config.ROOT_CA_NAME || "my-root-ca");
+  return `
+    <div class="empty-state empty-cta">
+      <p>No certificate stores found. Generate your first certificate to create <code>./certs/${folder}/</code>.</p>
+      <button type="button" class="button button-primary" data-action="go-generate">Generate a certificate</button>
+    </div>
+  `;
+}
+
+function updateStoreSearchCount(stores) {
+  if (!els.storeSearchCount) {
+    return;
+  }
+  const query = state.storeQuery.trim();
+  if (stores.length === 0) {
+    els.storeSearchCount.textContent = "";
+    return;
+  }
+  if (!query) {
+    els.storeSearchCount.textContent = `${stores.length} store${stores.length === 1 ? "" : "s"}`;
+    return;
+  }
+  const visible = storesForQuery(stores, query).length;
+  els.storeSearchCount.textContent = `${visible} of ${stores.length} store${stores.length === 1 ? "" : "s"}`;
+}
+
 function renderStores() {
   renderExpiring();
   const stores = sortedStores();
+  updateStoreSearchCount(stores);
 
   if (stores.length === 0) {
-    const empty = `<p class="empty-state">No certificate stores found. Generate your first certificate to create <code>./certs/${escapeHtml(state.config.ROOT_CA_NAME || "my-root-ca")}/</code>.</p>`;
+    const empty = emptyStoresMarkup();
     els.dashboardStores.innerHTML = empty;
     els.storesList.innerHTML = `<article class="panel"><div class="panel-body">${empty}</div></article>`;
     renderHierarchy();
@@ -654,7 +882,19 @@ function renderStores() {
     .map((store) => renderStoreCard(store, true))
     .join("");
 
-  els.storesList.innerHTML = stores.map((store) => renderStoreCard(store)).join("");
+  const visible = storesForQuery(stores, state.storeQuery);
+  if (visible.length === 0) {
+    els.storesList.innerHTML = `<article class="panel"><div class="panel-body">
+      <div class="empty-state empty-cta">
+        <p>No stores or certificates match “${escapeHtml(state.storeQuery.trim())}”.</p>
+        <button type="button" class="button button-secondary" data-action="clear-search">Clear search</button>
+      </div>
+    </div></article>`;
+  } else {
+    els.storesList.innerHTML = visible
+      .map(({ store, certificates }) => renderStoreCard({ ...store, certificates }))
+      .join("");
+  }
   renderHierarchy();
 }
 
@@ -703,7 +943,7 @@ function renderHierarchyTree(store) {
   if (!store) {
     els.hierarchySummary.textContent =
       "Choose a Root CA to see the certificates stored under it.";
-    els.hierarchyTree.innerHTML = `<p class="empty-state">No Root CA stores found. Generate a certificate to create one under <code>./certs/</code>.</p>`;
+    els.hierarchyTree.innerHTML = emptyStoresMarkup();
     return;
   }
 
@@ -887,25 +1127,64 @@ function closeDetail() {
   els.detailModal.hidden = true;
 }
 
-function renderTrustGuide() {
-  const rootCaName = state.config.ROOT_CA_NAME || "my-root-ca";
-  const relativeCert = `./certs/${rootCaName}/${rootCaName}.crt`;
+function selectedTrustName(stores) {
+  const names = new Set(stores.map((store) => store.name));
+  if (state.trustStore && names.has(state.trustStore)) {
+    return state.trustStore;
+  }
+  if (state.config.ROOT_CA_NAME && names.has(state.config.ROOT_CA_NAME)) {
+    return state.config.ROOT_CA_NAME;
+  }
+  return stores[0]?.name || state.config.ROOT_CA_NAME || "my-root-ca";
+}
 
-  els.trustCommands.innerHTML = `
-    <article class="trust-card">
-      <h3>macOS</h3>
-      <pre class="trust-command">sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ${relativeCert}</pre>
-    </article>
-    <article class="trust-card">
-      <h3>Linux (Debian/Ubuntu)</h3>
-      <pre class="trust-command">sudo cp ${relativeCert} /usr/local/share/ca-certificates/${rootCaName}.crt
-sudo update-ca-certificates</pre>
-    </article>
-    <article class="trust-card">
-      <h3>Windows</h3>
-      <pre class="trust-command">Import ${relativeCert} into Trusted Root Certification Authorities via certmgr.msc</pre>
-    </article>
-  `;
+function renderTrustGuide() {
+  const stores = [...state.stores].sort((left, right) => left.name.localeCompare(right.name));
+  const selected = selectedTrustName(stores);
+  state.trustStore = selected;
+  const store = stores.find((entry) => entry.name === selected);
+  const hasCrt = Boolean(store?.artifacts?.crt);
+
+  if (els.trustSelect) {
+    if (stores.length === 0) {
+      els.trustSelect.disabled = true;
+      els.trustSelect.innerHTML = `<option value="${escapeHtml(selected)}">${escapeHtml(selected)} (not generated)</option>`;
+    } else {
+      els.trustSelect.disabled = false;
+      els.trustSelect.innerHTML = stores
+        .map((entry) => {
+          const isSelected = entry.name === selected ? " selected" : "";
+          return `<option value="${escapeHtml(entry.name)}"${isSelected}>${escapeHtml(entry.name)}</option>`;
+        })
+        .join("");
+    }
+  }
+
+  if (els.trustDownload) {
+    els.trustDownload.disabled = !hasCrt;
+    els.trustDownload.title = hasCrt
+      ? `Download ${selected}.crt`
+      : "Generate this Root CA before downloading the certificate";
+  }
+
+  els.trustCommands.innerHTML = trustCommandsFor(selected)
+    .map(
+      (entry) => `
+        <article class="trust-card">
+          <div class="trust-card-header">
+            <h3>${escapeHtml(entry.title)}</h3>
+            <button
+              type="button"
+              class="button button-secondary button-small"
+              data-action="copy-trust"
+              data-platform="${escapeHtml(entry.id)}"
+            >Copy</button>
+          </div>
+          <pre class="trust-command">${escapeHtml(entry.command)}</pre>
+        </article>
+      `,
+    )
+    .join("");
 }
 
 function switchView(view) {
@@ -920,6 +1199,10 @@ function switchView(view) {
   const meta = viewMeta[view];
   els.viewTitle.textContent = meta.title;
   els.viewDescription.textContent = meta.description;
+  document.querySelector(`.nav-link[data-view="${view}"]`)?.scrollIntoView({
+    inline: "nearest",
+    block: "nearest",
+  });
 }
 
 async function refreshAll() {
@@ -935,8 +1218,10 @@ async function refreshAll() {
   state.stores = storesPayload.stores;
 
   els.webuiUrl.textContent = statusPayload.webuiUrl;
-  renderFormSections(els.generateFields, false);
-  renderFormSections(els.configFields, true);
+  state.activePreset = "";
+  updatePresetChrome();
+  renderFormSections(els.generateFields, { collapsible: true, prefix: "generate" });
+  renderFormSections(els.configFields, { includeWebUi: true, prefix: "config" });
   renderStats();
   renderStores();
   renderTrustGuide();
@@ -971,7 +1256,7 @@ async function handleGenerate(event) {
     renderStores();
     renderTrustGuide();
     if ((result.output || "").includes("already exists")) {
-      showToast("Certificate already exists. Set Force Regenerate to yes to overwrite.", "error");
+      showToast("Certificate already exists. Set Force Regenerate to yes to overwrite.", "warning");
     } else {
       showToast("Certificate generation completed.");
     }
@@ -1019,7 +1304,7 @@ async function handleSaveConfig(event) {
     renderTrustGuide();
 
     if (result.restartRequired) {
-      showToast("Configuration saved. Restart the web UI to apply bind/port changes.", "error");
+      showToast("Configuration saved. Restart the web UI to apply bind/port changes.", "warning");
     } else {
       showToast("Configuration saved.");
     }
@@ -1035,15 +1320,18 @@ async function handleReuseStore(storeName) {
   try {
     const result = await api(`/api/stores/${encodeURIComponent(storeName)}/reuse-config`);
     state.config = { ...state.config, ...result.values };
+    state.activePreset = "";
+    state.generateOpen = { rootCa: false, certificate: true, advanced: false };
     document.getElementById("save-before-generate").checked = false;
-    renderFormSections(els.generateFields, false);
+    updatePresetChrome();
+    renderFormSections(els.generateFields, { collapsible: true, prefix: "generate" });
     switchView("generate");
 
     let message = `Loaded Root CA '${storeName}'. Update the certificate fields, then generate.`;
     if (result.encryptedKey) {
       message += " This Root CA key is encrypted — enter ROOT_CA_PASSPHRASE before generating.";
     }
-    showToast(message);
+    showToast(message, result.encryptedKey ? "warning" : "info");
   } catch (error) {
     showToast(error.message, "error");
   } finally {
@@ -1564,6 +1852,14 @@ function handleStoreAction(event) {
     state.hierarchyStore = storeName;
     renderHierarchy();
     switchView("hierarchy");
+  } else if (action === "go-generate") {
+    switchView("generate");
+  } else if (action === "clear-search") {
+    state.storeQuery = "";
+    if (els.storeSearch) {
+      els.storeSearch.value = "";
+    }
+    renderStores();
   } else if (action === "export-archive" && button.dataset.scope) {
     openExport({
       scope: button.dataset.scope,
@@ -1604,7 +1900,7 @@ document.querySelectorAll(".nav-link").forEach((button) => {
 document.getElementById("refresh-button").addEventListener("click", async () => {
   try {
     await refreshAll();
-    showToast("Refreshed.");
+    showToast("Refreshed.", "info");
   } catch (error) {
     showToast(error.message, "error");
   }
@@ -1649,6 +1945,98 @@ document.addEventListener("keydown", (event) => {
   }
 });
 els.generateForm.addEventListener("submit", handleGenerate);
+els.generateForm.addEventListener("input", (event) => {
+  refreshSectionSummaries();
+  if (applyingPreset) {
+    return;
+  }
+  const presetFields = new Set([
+    "CERT_NAME",
+    "CERT_COMMON_NAME",
+    "CERT_DNS_NAMES",
+    "CERT_IP_ADDRESSES",
+  ]);
+  if (presetFields.has(event.target?.name) && state.activePreset) {
+    state.activePreset = "";
+    updatePresetChrome();
+  }
+});
+els.generateFields.addEventListener(
+  "toggle",
+  (event) => {
+    const details = event.target;
+    if (!details?.dataset?.section) {
+      return;
+    }
+    state.generateOpen = {
+      ...(state.generateOpen || defaultGenerateOpen()),
+      [details.dataset.section]: details.open,
+    };
+  },
+  true,
+);
+document.querySelectorAll(".preset-chip").forEach((button) => {
+  button.addEventListener("click", () => applyPreset(button.dataset.preset));
+});
+document.getElementById("preset-lan-ip")?.addEventListener("input", () => {
+  if (state.activePreset !== "lan") {
+    return;
+  }
+  const ip = document.getElementById("preset-lan-ip").value.trim();
+  if (ip && !isIpAddress(ip)) {
+    return;
+  }
+  applyPreset("lan", { quiet: true });
+});
+document.getElementById("preset-lan-ip")?.addEventListener("focusout", (event) => {
+  if (event.relatedTarget?.dataset?.preset || state.activePreset !== "lan") {
+    return;
+  }
+  applyPreset("lan");
+});
+document.getElementById("preset-wildcard-base")?.addEventListener("input", () => {
+  if (state.activePreset !== "wildcard") {
+    return;
+  }
+  applyPreset("wildcard", { quiet: true });
+});
+document.getElementById("preset-wildcard-base")?.addEventListener("focusout", (event) => {
+  if (event.relatedTarget?.dataset?.preset || state.activePreset !== "wildcard") {
+    return;
+  }
+  applyPreset("wildcard");
+});
+els.storeSearch?.addEventListener("input", () => {
+  state.storeQuery = els.storeSearch.value;
+  renderStores();
+});
+els.trustSelect?.addEventListener("change", () => {
+  state.trustStore = els.trustSelect.value;
+  renderTrustGuide();
+});
+els.trustDownload?.addEventListener("click", () => {
+  const store = state.stores.find((entry) => entry.name === state.trustStore);
+  if (!store?.artifacts?.crt) {
+    showToast("That Root CA certificate is not on disk yet.", "warning");
+    return;
+  }
+  handleDownload(store.name, null, "crt").catch((error) => showToast(error.message, "error"));
+});
+els.trustCommands.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-action='copy-trust']");
+  if (!button) {
+    return;
+  }
+  const command = trustCommandsFor(state.trustStore).find(
+    (entry) => entry.id === button.dataset.platform,
+  );
+  if (!command) {
+    return;
+  }
+  copyText(command.command, `${command.title} command copied.`).catch((error) => {
+    showToast(error.message, "error");
+  });
+});
 els.configForm.addEventListener("submit", handleSaveConfig);
 
 refreshAll().catch((error) => {
