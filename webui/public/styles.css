@@ -52,7 +52,7 @@ code {
 
 .app {
   display: grid;
-  grid-template-columns: var(--sidebar-width) 1fr;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
   min-height: 100vh;
 }
 
@@ -150,6 +150,7 @@ code {
 }
 
 .main {
+  min-width: 0;
   padding: 28px 32px 40px;
 }
 
@@ -197,6 +198,7 @@ code {
 
 .view.active {
   display: grid;
+  min-width: 0;
 }
 
 .stats-grid,
@@ -215,7 +217,12 @@ code {
 }
 
 .panel-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  /* Stack to one column before store rows and the log can collide. */
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 28rem), 1fr));
+}
+
+.panel-grid > * {
+  min-width: 0;
 }
 
 .panel-grid.single {
@@ -233,7 +240,12 @@ code {
 }
 
 .panel {
+  min-width: 0;
   overflow: hidden;
+}
+
+.panel-log {
+  overflow: auto;
 }
 
 .panel-header,
@@ -241,6 +253,11 @@ code {
 .form-footer,
 .form-sections {
   padding: 22px 24px;
+}
+
+.panel-body {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .form-sections {
@@ -529,6 +546,8 @@ details.form-section .field-grid {
   padding: 7px 10px;
   font-size: 0.82rem;
   border-radius: 10px;
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .button:disabled {
@@ -564,6 +583,8 @@ details.form-section .field-grid {
   margin: 0;
   padding: 18px 20px;
   min-height: 180px;
+  min-width: 0;
+  max-width: 100%;
   overflow: auto;
   background: rgba(2, 6, 23, 0.72);
   border-top: 1px solid var(--border);
@@ -580,26 +601,39 @@ details.form-section .field-grid {
 .store-card,
 .trust-card {
   padding: 20px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .store-header,
 .cert-row {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 12px;
   align-items: flex-start;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .identity-row {
   display: flex;
   gap: 12px;
   align-items: flex-start;
+  flex: 1 1 14rem;
   min-width: 0;
+  max-width: 100%;
+}
+
+.identity-row > :not(.select-check) {
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .select-check {
   display: inline-flex;
   padding-top: 3px;
+  flex: 0 0 auto;
 }
 
 .select-check input {
@@ -613,6 +647,24 @@ details.form-section .field-grid {
 .store-header h3,
 .trust-card h3 {
   margin: 0;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.store-header > *,
+.cert-row > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.identity-row .link-button,
+.cert-row .link-button {
+  display: inline-block;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
 }
 
 .meta-list {
@@ -629,10 +681,12 @@ details.form-section .field-grid {
 .meta-label {
   color: var(--text-muted);
   font-size: 0.78rem;
+  overflow-wrap: anywhere;
 }
 
 .meta-value {
   font-size: 0.9rem;
+  overflow-wrap: anywhere;
 }
 
 .cert-list {
@@ -661,7 +715,9 @@ details.form-section .field-grid {
 .cert-actions,
 .store-actions {
   justify-content: flex-end;
-  flex-shrink: 0;
+  flex: 1 1 18rem;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .store-card.expiry-soon,
