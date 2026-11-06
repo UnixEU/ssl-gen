@@ -38,7 +38,7 @@
           </div>
         </div>
 
-        <nav class="nav" aria-label="Primary">
+        <nav class="nav" id="primary-nav" aria-label="Primary">
           <button class="nav-link active" data-view="dashboard">Dashboard</button>
           <button class="nav-link" data-view="generate">Generate</button>
           <button class="nav-link" data-view="stores">Certificates</button>
@@ -114,7 +114,8 @@
               <div>
                 <h2>Generate Certificate</h2>
                 <p class="panel-copy">
-                  Configure the Root CA and server certificate, then generate artifacts in
+                  Start from a preset or open a section. Presets fill the certificate name and
+                  SAN list and leave the Root CA fields unchanged. Artifacts are written to
                   <code>./certs/&lt;ROOT_CA_NAME&gt;/</code>.
                 </p>
               </div>
@@ -126,15 +127,51 @@
               </div>
             </div>
 
+            <div class="preset-bar">
+              <div class="preset-heading">
+                <p class="wizard-kicker">Preset</p>
+                <p class="meta-label">localhost, a .local name with a LAN address, or a wildcard.</p>
+              </div>
+              <div class="preset-row" role="group" aria-label="Certificate presets">
+                <button type="button" class="preset-chip" data-preset="localhost" aria-pressed="false">
+                  <span class="preset-name">localhost</span>
+                  <span class="preset-detail">localhost, *.localhost, 127.0.0.1, ::1</span>
+                </button>
+                <button type="button" class="preset-chip" data-preset="lan" aria-pressed="false">
+                  <span class="preset-name">*.local / LAN IP</span>
+                  <span class="preset-detail">host.local, *.local, plus an optional LAN address</span>
+                </button>
+                <button type="button" class="preset-chip" data-preset="wildcard" aria-pressed="false">
+                  <span class="preset-name">Wildcard</span>
+                  <span class="preset-detail">*.dev.local and the apex name</span>
+                </button>
+              </div>
+              <div class="preset-extra" id="preset-lan" hidden>
+                <label for="preset-lan-ip">LAN IP</label>
+                <input id="preset-lan-ip" inputmode="decimal" placeholder="192.168.1.20" autocomplete="off" />
+                <span class="meta-label">Added as an IP SAN. Leave blank to keep the DNS names only.</span>
+              </div>
+              <div class="preset-extra" id="preset-wildcard" hidden>
+                <label for="preset-wildcard-base">Apex name</label>
+                <input id="preset-wildcard-base" value="dev.local" placeholder="dev.local" autocomplete="off" />
+                <span class="meta-label">
+                  Common Name becomes *.<span id="preset-wildcard-preview">dev.local</span>, and both names are added to the SAN list.
+                </span>
+              </div>
+            </div>
+
             <div class="form-sections" id="generate-fields"></div>
 
             <div class="form-footer">
-              <button type="button" class="button button-secondary" id="validate-button">
-                Validate
-              </button>
-              <button type="submit" class="button button-primary" id="generate-button">
-                Generate Certificate
-              </button>
+              <p class="footer-note">Collapsed sections are still included when you generate.</p>
+              <div class="form-footer-actions">
+                <button type="button" class="button button-secondary" id="validate-button">
+                  Validate
+                </button>
+                <button type="submit" class="button button-primary" id="generate-button">
+                  Generate Certificate
+                </button>
+              </div>
             </div>
           </form>
 
@@ -164,6 +201,18 @@
                   Export all
                 </button>
               </div>
+            </div>
+            <div class="panel-body store-search-row">
+              <div class="field">
+                <label for="store-search">Search stores</label>
+                <input
+                  id="store-search"
+                  type="search"
+                  placeholder="Filter by name, subject, or SAN"
+                  autocomplete="off"
+                />
+              </div>
+              <p class="meta-label" id="store-search-count"></p>
             </div>
           </article>
           <div class="panel-grid single" id="stores-list"></div>
@@ -212,13 +261,26 @@
         <section class="view" id="view-trust">
           <article class="panel">
             <div class="panel-header">
-              <h2>Trust the Root CA Locally</h2>
-              <p class="panel-copy">
-                Install the Root CA certificate in your system trust store so browsers and tools
-                accept certificates signed by it.
-              </p>
+              <div>
+                <h2>Trust the Root CA Locally</h2>
+                <p class="panel-copy">
+                  Copy the install command for your system. This page downloads only the public
+                  Root CA certificate (<code>.crt</code>).
+                </p>
+              </div>
+              <div class="panel-actions">
+                <label class="hierarchy-picker" for="trust-ca">
+                  <span>Root CA</span>
+                  <select id="trust-ca"></select>
+                </label>
+                <button class="button button-primary" id="trust-download" type="button" disabled>
+                  Download Root .crt
+                </button>
+              </div>
             </div>
-            <div class="trust-grid" id="trust-commands"></div>
+            <div class="panel-body trust-body">
+              <div class="trust-grid" id="trust-commands"></div>
+            </div>
           </article>
 
           <article class="panel">
