@@ -117,7 +117,8 @@ All settings live in `.env`. File and folder names are taken directly from `ROOT
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `KEY_TYPE` | `ec` | Key algorithm: `ec` (P-256) or `rsa` |
+| `KEY_TYPE` | `ec` | Key algorithm: `ec` or `rsa` |
+| `KEY_SIZE` | `256` | EC `256`, `384`, or `521`, or RSA `2048`, `3072`, or `4096`. See field notes |
 | `FORCE_REGENERATE` | `no` | Set to `yes` to overwrite an existing `CERT_NAME` |
 | `EXPORT_P12` | `yes` | Export a PKCS#12 (`.p12`) bundle |
 | `P12_PASSWORD` | `changeit` | Password for the exported `.p12` file |
@@ -154,6 +155,7 @@ CERT_IP_ADDRESSES=
 CERT_VALIDITY_DAYS=365
 
 KEY_TYPE=ec
+KEY_SIZE=256
 FORCE_REGENERATE=no
 EXPORT_P12=yes
 P12_PASSWORD=changeit
@@ -169,6 +171,7 @@ WEBUI_PORT=8443
 - **CERT_DNS_NAMES** — Hostnames and IP addresses, comma-separated. IPs like `127.0.0.1` are automatically added as IP SAN entries.
 - **CERT_COMMON_NAME** — Must appear in `CERT_DNS_NAMES`.
 - **Values with spaces** — Work without quotes (e.g. `IT Department`). Quoting is optional.
+- **KEY_SIZE** — For `KEY_TYPE=ec`, `256` is P-256 (`prime256v1`), `384` is P-384 (`secp384r1`), and `521` is P-521 (`secp521r1`). For `KEY_TYPE=rsa`, use `2048`, `3072`, or `4096`. The web UI dropdown follows the key type, and saving Configuration writes `KEY_SIZE` so `make certs` uses the same size. An explicit size applies to the certificate and to a Root CA created in that run. Existing Root CA keys are reused and are not resized.
 - **FORCE_REGENERATE** — When `no`, re-running with the same `CERT_NAME` skips generation and prints a message.
 - **WEBUI_BIND / WEBUI_PORT** — Host address and port used by `make webui`. `WEBUI_BIND` must stay `127.0.0.1`.
 
@@ -280,21 +283,23 @@ The `.key` button is marked secret. The prompt tells you that anyone with the fi
 
 ### Export and import
 
-Dashboard and Certificates both offer **Export all** and **Import TAR**. Each Root CA card has **Export TAR** for that store. On the Certificates page, each signed certificate has **Export TAR** for that certificate.
+Dashboard and Certificates offer **Import**, **Export selected**, and **Export All**. Check a Root CA, a certificate, or both, then **Export selected**. If nothing is checked, **Export selected** stays disabled. A checked Root CA can be the full store or only the public Root CA. A checked certificate exports that certificate (and the public Root CA a relying party needs) without the rest of the project. Each Root CA card still has **Export TAR**, with the same full-store or Root-CA-only choice. On the Certificates page, each signed certificate still has **Export TAR**.
 
 | Scope | Default contents | File name |
 |-------|------------------|-----------|
-| Store | Public files in `./certs/<ROOT_CA_NAME>/` | `ssl-gen-<ROOT_CA_NAME>.tar.gz` |
-| Certificate | That certificate's public files, plus the public Root CA `.crt` from the same store | `ssl-gen-<ROOT_CA_NAME>-<CERT_NAME>.tar.gz` |
+| Full chain / store | Public files in `./certs/<ROOT_CA_NAME>/` | `ssl-gen-<ROOT_CA_NAME>.tar.gz` |
+| Root CA only | That store's public Root CA `.crt` | `ssl-gen-<ROOT_CA_NAME>-root.tar.gz` |
+| This certificate | That certificate's public files, plus the public Root CA `.crt` from the same store | `ssl-gen-<ROOT_CA_NAME>-<CERT_NAME>.tar.gz` |
+| Selected | The stores and certificates you checked. One item uses that item's file name | `ssl-gen-selected.tar.gz` when more than one item is selected |
 | All stores | Public files from every store under `./certs` | `ssl-gen-certs.tar.gz` |
 
-Public files are the `.crt`, `.csr`, `.pem`, full chain, and extensions file when they are on disk. Check **Include private keys** and confirm to add `.key` and `.p12` for the certificates in that scope, including Root CA keys on a store or all-stores export. A certificate export adds those key files for the selected certificate and still includes the store's public Root CA `.crt`. Read [Private keys in a TAR](#private-keys-in-a-tar) before you move an archive that contains keys.
+Public files are the `.crt`, `.csr`, `.pem`, full chain, and extensions file when they are on disk. **Root CA only** is just the public Root `.crt`. Check **Include private keys** and confirm to add `.key` and `.p12` for the certificates in that scope, including Root CA keys on a store or all-stores export. On a Root-CA-only export, that option adds the Root CA `.key` and not the other keys in the store. A certificate export adds the key files for the selected certificate and still includes the store's public Root CA `.crt`. Exports stay public-only unless you opt in. Read [Private keys in a TAR](#private-keys-in-a-tar) before you move an archive that contains keys.
 
-Exports include `manifest.json` at the top of the archive. It records `exportedAt`, the scope (`store`, `certificate`, or `all`), the store and certificate name when those apply, and one entry per name with its file paths and `notAfter`. Passphrases and PKCS#12 passwords stay out of it. When an imported archive contains `manifest.json`, import uses it for names and expiry and leaves that file out of `./certs`.
+Exports include `manifest.json` at the top of the archive. It records `exportedAt`, the scope (`store`, `root`, `certificate`, `selection`, or `all`), the store and certificate name when those apply, and one entry per name with its file paths and `notAfter`. A selection also lists each chosen item. Passphrases and PKCS#12 passwords stay out of it. When an imported archive contains `manifest.json`, import uses it for names and expiry and leaves that file out of `./certs`.
 
 **Encrypt with OpenSSL AES-256** is optional. The download is then named `.tar.gz.enc`, and import asks for that passphrase. The passphrase is used for that download only.
 
-**Import TAR** takes a `.tar`, `.tar.gz`, or encrypted archive from this UI. Preview the file first. Extraction stays inside `./certs/<store>/`. When a file is already there, choose:
+**Import** takes a `.tar`, `.tar.gz`, or encrypted archive from this UI. Pick the file you want. Preview it first. Extraction stays inside `./certs/<store>/`. When a file is already there, choose:
 
 - **Skip** — leave the existing file. This is the default.
 - **Rename** — write the incoming file beside it, with an `-imported` suffix.

@@ -220,6 +220,7 @@ app.post(
       scope: req.body?.scope,
       storeName: req.body?.storeName,
       certName: req.body?.certName,
+      items: req.body?.items,
       includeKeys: req.body?.includeKeys === true,
       confirmKeys: req.body?.confirmKeys === true,
       encrypt: req.body?.encrypt === true,

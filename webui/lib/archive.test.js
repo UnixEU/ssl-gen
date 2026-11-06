@@ -158,6 +158,97 @@ test("certificate export is a subset and all-stores export includes every store"
   assert.equal(manifestOf(everything).store, null);
 });
 
+test("root export is the public Root CA certificate only", () => {
+  const { projectRoot, alpha } = makeProject();
+  const archive = exportArchive(projectRoot, { scope: "root", storeName: alpha.storeName });
+  const names = namesOf(archive);
+
+  assert.equal(archive.fileName, "ssl-gen-alpha-ca-root.tar.gz");
+  assert.ok(names.includes("manifest.json"));
+  assert.ok(names.includes("alpha-ca/alpha-ca.crt"));
+  assert.equal(names.includes("alpha-ca/leaf.crt"), false);
+  assert.equal(names.includes("alpha-ca/other.crt"), false);
+  assert.equal(names.includes("alpha-ca/leaf-extensions.cnf"), false);
+  assert.equal(names.some((name) => name.endsWith(".key") || name.endsWith(".p12")), false);
+  assert.equal(manifestOf(archive).scope, "root");
+  assert.equal(manifestOf(archive).certificate, null);
+
+  const withKey = exportArchive(projectRoot, {
+    scope: "root",
+    storeName: alpha.storeName,
+    includeKeys: true,
+    confirmKeys: true,
+  });
+  const keyNames = namesOf(withKey);
+  assert.ok(keyNames.includes("alpha-ca/alpha-ca.key"));
+  assert.equal(keyNames.includes("alpha-ca/leaf.key"), false);
+  assert.equal(keyNames.includes("alpha-ca/leaf.p12"), false);
+});
+
+test("selection export keeps store, root, and certificate scopes", () => {
+  const { projectRoot, alpha, beta } = makeProject();
+  expectStatus(
+    () => exportArchive(projectRoot, { scope: "selection", items: [] }),
+    400,
+    /Select at least one/,
+  );
+  expectStatus(
+    () =>
+      exportArchive(projectRoot, {
+        scope: "selection",
+        items: [{ scope: "all", storeName: alpha.storeName }],
+      }),
+    400,
+    /Unknown export scope/,
+  );
+  expectStatus(
+    () =>
+      exportArchive(projectRoot, {
+        scope: "selection",
+        items: [{ scope: "store", storeName: "../alpha-ca" }],
+      }),
+    400,
+    /Store name/,
+  );
+
+  const oneCert = exportArchive(projectRoot, {
+    scope: "selection",
+    items: [{ scope: "certificate", storeName: alpha.storeName, certName: "leaf" }],
+  });
+  assert.equal(oneCert.fileName, "ssl-gen-alpha-ca-leaf.tar.gz");
+  const oneNames = namesOf(oneCert);
+  assert.ok(oneNames.includes("alpha-ca/leaf.crt"));
+  assert.ok(oneNames.includes("alpha-ca/leaf-fullchain.pem"));
+  assert.ok(oneNames.includes("alpha-ca/alpha-ca.crt"));
+  assert.equal(oneNames.includes("alpha-ca/other.crt"), false);
+  assert.equal(oneNames.some((name) => name.endsWith(".key")), false);
+
+  const mixed = exportArchive(projectRoot, {
+    scope: "selection",
+    items: [
+      { scope: "root", storeName: alpha.storeName },
+      { scope: "certificate", storeName: alpha.storeName, certName: "leaf" },
+      { scope: "store", storeName: beta.storeName },
+    ],
+    includeKeys: true,
+    confirmKeys: true,
+  });
+  assert.equal(mixed.fileName, "ssl-gen-selected.tar.gz");
+  const mixedNames = namesOf(mixed);
+  assert.equal(mixedNames.filter((name) => name === "alpha-ca/alpha-ca.crt").length, 1);
+  assert.ok(mixedNames.includes("alpha-ca/alpha-ca.key"));
+  assert.ok(mixedNames.includes("alpha-ca/leaf.key"));
+  assert.equal(mixedNames.includes("alpha-ca/other.crt"), false);
+  assert.ok(mixedNames.includes("beta-ca/beta-ca.key"));
+  assert.ok(mixedNames.includes("beta-ca/leaf.crt"));
+  const manifest = manifestOf(mixed);
+  assert.equal(manifest.scope, "selection");
+  assert.equal(manifest.store, null);
+  assert.equal(manifest.items.length, 3);
+  assert.equal(manifest.items[0].scope, "root");
+  assertNoSecrets(manifest);
+});
+
 test("export skips symlink files and refuses a certs directory symlink", () => {
   const { projectRoot, alpha } = makeProject();
   const outside = fs.mkdtempSync(path.join(os.tmpdir(), "ssl-gen-outside-"));
@@ -426,6 +517,27 @@ test("archive routes keep export and import inside certs", async () => {
     assert.match(exported.disposition, /filename="ssl-gen-alpha-ca\.tar\.gz"/);
     assert.equal(exported.bytes.subarray(0, 2).toString("hex"), "1f8b");
     assert.equal(unpackArchive(exported.bytes).some((entry) => entry.name.endsWith(".key")), true);
+
+    const rootOnly = await request("/api/export", {
+      scope: "root",
+      storeName: alpha.storeName,
+    });
+    assert.equal(rootOnly.status, 200);
+    assert.match(rootOnly.disposition, /filename="ssl-gen-alpha-ca-root\.tar\.gz"/);
+    const rootNames = unpackArchive(rootOnly.bytes).map((entry) => entry.name);
+    assert.ok(rootNames.includes("alpha-ca/alpha-ca.crt"));
+    assert.equal(rootNames.includes("alpha-ca/leaf.crt"), false);
+    assert.equal(rootNames.some((name) => name.endsWith(".key")), false);
+
+    const selected = await request("/api/export", {
+      scope: "selection",
+      items: [{ scope: "certificate", storeName: alpha.storeName, certName: "leaf" }],
+    });
+    assert.equal(selected.status, 200);
+    assert.match(selected.disposition, /filename="ssl-gen-alpha-ca-leaf\.tar\.gz"/);
+    const selectedNames = unpackArchive(selected.bytes).map((entry) => entry.name);
+    assert.ok(selectedNames.includes("alpha-ca/leaf.crt"));
+    assert.equal(selectedNames.includes("alpha-ca/other.crt"), false);
 
     const escaped = packArchive([
       { name: "../../secret.txt", data: Buffer.from("DO-NOT-LEAK\n") },
