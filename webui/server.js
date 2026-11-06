@@ -16,6 +16,13 @@ const {
   resolveDownloadArtifact,
 } = require("./lib/certs");
 const { exportArchive, previewImport, applyImport } = require("./lib/archive");
+const {
+  changeMaterialPassword,
+  convertMaterial,
+  describeMaterial,
+  inspectMaterial,
+  publicConversion,
+} = require("./lib/material");
 const { runScript, getLastOutput, isRunning } = require("./lib/runner");
 
 const PROJECT_ROOT = process.env.PROJECT_ROOT || "/project";
@@ -255,6 +262,83 @@ app.post(
     });
   }),
 );
+
+function certNameFrom(req) {
+  return req.params.certName || null;
+}
+
+app.get(
+  "/api/stores/:storeName/material",
+  asyncHandler(async (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.json(describeMaterial(PROJECT_ROOT, req.params.storeName, null));
+  }),
+);
+
+app.get(
+  "/api/stores/:storeName/certificates/:certName/material",
+  asyncHandler(async (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.json(describeMaterial(PROJECT_ROOT, req.params.storeName, certNameFrom(req)));
+  }),
+);
+
+app.get(
+  "/api/stores/:storeName/inspect",
+  asyncHandler(async (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.json(inspectMaterial(PROJECT_ROOT, req.params.storeName, null));
+  }),
+);
+
+app.get(
+  "/api/stores/:storeName/certificates/:certName/inspect",
+  asyncHandler(async (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.json(inspectMaterial(PROJECT_ROOT, req.params.storeName, certNameFrom(req)));
+  }),
+);
+
+app.post(
+  "/api/convert",
+  asyncHandler(async (req, res) => {
+    const result = convertMaterial(PROJECT_ROOT, req.body || {});
+    const download = (req.body?.destination || "download") !== "store";
+    if (download) {
+      res.setHeader("Content-Type", result.contentType);
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      if (result.stored) {
+        res.setHeader("X-Ssl-Gen-Stored", result.fileName);
+      }
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${result.fileName}"; filename*=UTF-8''${encodeURIComponent(result.fileName)}`,
+      );
+      res.send(result.data);
+      return;
+    }
+
+    res.setHeader("Cache-Control", "no-store");
+    res.json(publicConversion(result));
+  }),
+);
+
+function passwordHandler(readCertName) {
+  return asyncHandler(async (req, res) => {
+    const result = changeMaterialPassword(
+      PROJECT_ROOT,
+      req.params.storeName,
+      readCertName ? req.params.certName : null,
+      req.body || {},
+    );
+    res.setHeader("Cache-Control", "no-store");
+    res.json(result);
+  });
+}
+
+app.post("/api/stores/:storeName/password", passwordHandler(false));
+app.post("/api/stores/:storeName/certificates/:certName/password", passwordHandler(true));
 
 app.get("/api/stores/:storeName/download/:artifact", downloadHandler(false));
 

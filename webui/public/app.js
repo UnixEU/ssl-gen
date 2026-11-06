@@ -7,6 +7,7 @@ const state = {
   stores: [],
   activeView: "dashboard",
   detail: null,
+  tool: null,
   archive: null,
   archivePreview: null,
   hierarchyStore: "",
@@ -29,7 +30,7 @@ const viewMeta = {
   },
   stores: {
     title: "Certificates",
-    description: "Search Root CAs, export a TAR, or import an archive into ./certs.",
+    description: "Search stores, inspect a chain, convert PEM and DER, or change a key password.",
   },
   hierarchy: {
     title: "Hierarchy",
@@ -135,6 +136,11 @@ const els = {
   archiveTitle: document.getElementById("archive-title"),
   archiveBody: document.getElementById("archive-body"),
   archiveFooter: document.getElementById("archive-footer"),
+  toolModal: document.getElementById("tool-modal"),
+  toolKicker: document.getElementById("tool-kicker"),
+  toolTitle: document.getElementById("tool-title"),
+  toolBody: document.getElementById("tool-body"),
+  toolFooter: document.getElementById("tool-footer"),
   toastStack: document.getElementById("toast-stack"),
   overlay: document.getElementById("overlay"),
   overlayMessage: document.getElementById("overlay-message"),
@@ -360,6 +366,16 @@ function renderDetailsButton(storeName, certName) {
   const kind = certName ? "certificate" : "root";
   const certAttr = certName ? ` data-cert="${escapeHtml(certName)}"` : "";
   return `<button type="button" class="button button-secondary button-small" data-action="show-detail" data-kind="${kind}" data-store="${escapeHtml(storeName)}"${certAttr}>Details</button>`;
+}
+
+function renderToolButtons(storeName, certName) {
+  const certAttr = certName ? ` data-cert="${escapeHtml(certName)}"` : "";
+  const attrs = `data-store="${escapeHtml(storeName)}"${certAttr}`;
+  return `
+    <button type="button" class="button button-secondary button-small" data-action="view-info" ${attrs}>Info</button>
+    <button type="button" class="button button-secondary button-small" data-action="open-convert" ${attrs}>Convert</button>
+    <button type="button" class="button button-secondary button-small" data-action="open-password" ${attrs}>Password</button>
+  `;
 }
 
 function downloadUrl(storeName, certName, artifact, confirm = false) {
@@ -635,6 +651,7 @@ function renderExpiring() {
           <div class="cert-actions">
             ${renderExpiryBadge(item.metadata?.notAfter)}
             ${renderDetailsButton(item.storeName, item.certName)}
+            ${renderToolButtons(item.storeName, item.certName)}
           </div>
         </div>
       `;
@@ -706,6 +723,7 @@ function renderStoreCard(store, compact = false) {
             ${renderExpiryBadge(metadata.notAfter)}
             ${downloads}
             ${renderDetailsButton(store.name, cert.name)}
+            ${renderToolButtons(store.name, cert.name)}
             ${exportCertButton}
             ${deleteCertButton}
           </div>
@@ -767,6 +785,7 @@ function renderStoreCard(store, compact = false) {
           ${renderExpiryBadge(store.metadata?.notAfter)}
           <span class="badge">${store.certificates.length} cert(s)</span>
           ${renderDetailsButton(store.name, null)}
+          ${renderToolButtons(store.name, null)}
           ${hierarchyButton}
           <button
             class="button button-secondary button-small"
@@ -1104,7 +1123,12 @@ function renderDetail() {
       ${renderDownloadButtons(detail.storeName, detail.certName, detail.artifacts) || `<span class="meta-label">No artifacts available</span>`}
     </div>
   `;
+  const certAttr = detail.certName ? ` data-cert="${escapeHtml(detail.certName)}"` : "";
+  const toolAttrs = `data-store="${escapeHtml(detail.storeName)}"${certAttr}`;
   els.detailFooter.innerHTML = `
+    <button type="button" class="button button-secondary" data-action="view-info" ${toolAttrs}>View info</button>
+    <button type="button" class="button button-secondary" data-action="open-convert" ${toolAttrs}>Convert</button>
+    <button type="button" class="button button-secondary" data-action="open-password" ${toolAttrs}>Change password</button>
     <button type="button" class="button button-secondary" data-action="copy-path">Copy path</button>
     <button type="button" class="button button-secondary" data-action="copy-pem">Copy public PEM</button>
   `;
@@ -1830,6 +1854,590 @@ function handleArchiveClick(event) {
   }
 }
 
+function entityPath(storeName, certName, action) {
+  const store = encodeURIComponent(storeName);
+  return certName
+    ? `/api/stores/${store}/certificates/${encodeURIComponent(certName)}/${action}`
+    : `/api/stores/${store}/${action}`;
+}
+
+function closeTool() {
+  const body = els.toolBody;
+  if (body) {
+    body.querySelectorAll("input, textarea").forEach((field) => {
+      if (field.type === "password" || field.type === "text" || field.tagName === "TEXTAREA") {
+        field.value = "";
+      }
+      if (field.type === "file") {
+        field.value = "";
+      }
+    });
+    body.innerHTML = "";
+  }
+  if (els.toolFooter) {
+    els.toolFooter.innerHTML = "";
+  }
+  state.tool = null;
+  if (els.toolModal) {
+    els.toolModal.hidden = true;
+  }
+}
+
+function infoRow(label, value, wide = false) {
+  const text = String(value ?? "").trim();
+  return `
+    <div class="${wide ? "wide" : ""}">
+      <dt>${escapeHtml(label)}</dt>
+      <dd>${escapeHtml(text || "None")}</dd>
+    </div>
+  `;
+}
+
+function renderChainCards(chain) {
+  if (!chain?.present) {
+    return `<p class="meta-label">${escapeHtml(chain?.notes?.[0] || "No full chain file is stored.")}</p>`;
+  }
+
+  const badge = chain.orderWrong
+    ? `<span class="badge danger">Order looks wrong</span>`
+    : chain.incomplete
+      ? `<span class="badge warning">Incomplete chain</span>`
+      : `<span class="badge success">Chain complete</span>`;
+  const notes = (chain.notes || []).map((note) => `<p class="field-help">${escapeHtml(note)}</p>`).join("");
+  const cards = (chain.certificates || [])
+    .map((certificate) => {
+      const link = (chain.links || []).find((item) => item.fromIndex === certificate.index);
+      const bad = link && !link.matches;
+      const relation = link
+        ? `Issuer ${link.matches ? "matches" : "does not match"} the next subject: ${link.nextSubject}`
+        : certificate.selfSigned
+          ? "Self-signed. This is the trust anchor in the file."
+          : "The issuer is not the next certificate in this file.";
+      return `
+        <article class="chain-card ${bad ? "bad" : chain.incomplete && !link ? "warn" : ""}">
+          <strong>${certificate.index}. ${escapeHtml(certificate.commonName || certificate.subject || "Certificate")}</strong>
+          <div class="meta-label">Subject: ${escapeHtml(certificate.subject || "Unknown")}</div>
+          <div class="meta-label">Issuer: ${escapeHtml(certificate.issuer || "Unknown")}</div>
+          <div class="meta-label">${escapeHtml(relation)}</div>
+        </article>
+      `;
+    })
+    .join("");
+
+  return `
+    <div class="chain-list">
+      <div class="download-row">
+        <span class="meta-label">${escapeHtml(chain.sourceFile || "Full chain")}</span>
+        ${badge}
+      </div>
+      ${notes}
+      ${cards}
+    </div>
+  `;
+}
+
+function renderInspect(info) {
+  const certificate = info.certificate || {};
+  const fingerprints = certificate.fingerprints || {};
+  els.toolBody.innerHTML = `
+    <dl class="detail-grid">
+      ${infoRow("Subject", certificate.subject, true)}
+      ${infoRow("Issuer", certificate.issuer, true)}
+      ${infoRow("SAN", certificate.subjectAltName, true)}
+      ${infoRow("Valid from", certificate.notBefore)}
+      ${infoRow("Valid until", certificate.notAfter)}
+      ${infoRow("Serial", certificate.serial)}
+      ${infoRow("Key", certificate.key?.summary)}
+      <div class="wide">
+        <dt>SHA-256 fingerprint</dt>
+        <dd class="fingerprint">${escapeHtml(fingerprints.sha256 || "Unavailable")}</dd>
+      </div>
+      <div class="wide">
+        <dt>SHA-1 fingerprint</dt>
+        <dd class="fingerprint">${escapeHtml(fingerprints.sha1 || "Unavailable")}</dd>
+      </div>
+      ${infoRow("Basic constraints", certificate.basicConstraints, true)}
+      ${infoRow("Key usage", certificate.keyUsage, true)}
+      ${infoRow("Extended key usage", certificate.extendedKeyUsage, true)}
+      ${infoRow("Source", certificate.sourceFile)}
+    </dl>
+    <section>
+      <h3>Chain</h3>
+      ${renderChainCards(info.chain)}
+    </section>
+    <details>
+      <summary>OpenSSL text</summary>
+      <pre class="log-output openssl-text">${escapeHtml(certificate.text || "No OpenSSL text is available.")}</pre>
+    </details>
+  `;
+  els.toolFooter.innerHTML = "";
+}
+
+function suggestedConvertName(fileName, to, kind) {
+  const extension = to === "der" ? "der" : "pem";
+  const source = fileName || `converted.${extension}`;
+  if (kind === "key" || /\.key$/i.test(source) || /-key\.(pem|der)$/i.test(source)) {
+    return `${source.replace(/(-key)?\.(key|pem|der)$/i, "")}-key.${extension}`;
+  }
+  if (/-fullchain\.(pem|der)$/i.test(source)) {
+    return source.replace(/\.(pem|der)$/i, `.${extension}`);
+  }
+  return `${source.replace(/\.(crt|pem|der)$/i, "")}.${extension}`;
+}
+
+function renderConvert(material) {
+  const files = material.files || [];
+  const preferred = files.find((file) => file.convertible && file.fileName.endsWith(".crt")) || files.find((file) => file.convertible);
+  const options = files
+    .map((file) => {
+      const selected = file.fileName === preferred?.fileName ? " selected" : "";
+      const disabled = file.convertible ? "" : " disabled";
+      const note = file.reason ? ` — ${file.reason}` : "";
+      return `<option value="${escapeHtml(file.fileName)}"${selected}${disabled}>${escapeHtml(file.fileName + note)}</option>`;
+    })
+    .join("");
+  const initialName = suggestedConvertName(preferred?.fileName || "converted.pem", "der", preferred?.kind);
+  els.toolBody.innerHTML = `
+    <div class="callout">
+      Converts one X.509 certificate between PEM and DER, or an unencrypted private key.
+      PKCS#12 files and encrypted keys belong under Change password.
+      Saving or downloading a key writes secret key material. This UI is localhost-only and has no login.
+    </div>
+    <div class="tool-grid">
+      <div class="field">
+        <label for="convert-source">Source</label>
+        <select id="convert-source">
+          <option value="store" ${preferred ? "" : "disabled"}>File in this store</option>
+          <option value="upload" ${preferred ? "" : "selected"}>Upload or paste</option>
+        </select>
+      </div>
+      <div class="field" id="convert-store-field" ${preferred ? "" : "hidden"}>
+        <label for="convert-file">Store file</label>
+        <select id="convert-file">${options}</select>
+      </div>
+      <div class="field" id="convert-upload-field" ${preferred ? "hidden" : ""}>
+        <label for="convert-upload">PEM or DER file</label>
+        <input id="convert-upload" type="file" accept=".pem,.der,.crt,.cer,.key,application/x-pem-file,application/pkix-cert" />
+      </div>
+      <div class="field" id="convert-paste-field" ${preferred ? "hidden" : ""}>
+        <label for="convert-paste">Or paste PEM</label>
+        <textarea id="convert-paste" spellcheck="false" autocomplete="off" placeholder="-----BEGIN CERTIFICATE-----"></textarea>
+      </div>
+      <div class="field">
+        <label for="convert-to">Output format</label>
+        <select id="convert-to">
+          <option value="der" selected>DER</option>
+          <option value="pem">PEM</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="convert-destination">Write result</label>
+        <select id="convert-destination">
+          <option value="download">Download only</option>
+          <option value="store">Save into this store</option>
+          <option value="both">Save and download</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="convert-output">File name</label>
+        <input id="convert-output" type="text" value="${escapeHtml(initialName)}" autocomplete="off" spellcheck="false" />
+        <p class="field-help">Saved next to the certificate as a new name. An existing file is kept unless you confirm overwrite.</p>
+      </div>
+      <label class="toggle">
+        <input id="convert-overwrite" type="checkbox" />
+        <span>Overwrite if that file already exists</span>
+      </label>
+    </div>
+  `;
+  els.toolFooter.innerHTML = `
+    <button type="button" class="button button-primary" data-action="confirm-convert">Convert</button>
+  `;
+}
+
+function passwordHelp(entry, label) {
+  if (!entry?.present) {
+    return `No ${label} file is stored for this certificate.`;
+  }
+  if (entry.passwordRequired) {
+    return `A password is set on this ${label}. Enter the current password.`;
+  }
+  if (entry.encrypted) {
+    return `This ${label} uses an empty password. Leave the current password blank.`;
+  }
+  return `This ${label} is not encrypted. Leave the current password blank to set one.`;
+}
+
+function renderPassword(material) {
+  const password = material.password || {};
+  const choices = [
+    password.key?.present ? ["key", "Private key (.key)"] : null,
+    password.p12?.present ? ["p12", "PKCS#12 (.p12)"] : null,
+  ].filter(Boolean);
+  if (choices.length === 0) {
+    els.toolBody.innerHTML = `
+      <div class="callout">No private key or PKCS#12 file is stored for this certificate.</div>
+    `;
+    els.toolFooter.innerHTML = "";
+    return;
+  }
+  const options = choices
+    .map(([value, label], index) => `<option value="${value}"${index === 0 ? " selected" : ""}>${label}</option>`)
+    .join("");
+  const initial = choices[0][0];
+  const entry = password[initial];
+  els.toolBody.innerHTML = `
+    <div class="callout danger">
+      This rewrites a private key or PKCS#12 file in the store. The password is not shown again and is not written to the operation log.
+      This UI is localhost-only and has no login.
+    </div>
+    <div class="tool-grid">
+      <div class="field">
+        <label for="password-artifact">File</label>
+        <select id="password-artifact">${options}</select>
+      </div>
+      <p class="field-help" id="password-help">${escapeHtml(passwordHelp(entry, initial === "key" ? "private key" : "PKCS#12 file"))}</p>
+      <div class="field">
+        <label for="password-current">Current password</label>
+        <input id="password-current" type="password" autocomplete="current-password" />
+      </div>
+      <div class="field">
+        <label for="password-new">New password</label>
+        <input id="password-new" type="password" autocomplete="new-password" />
+      </div>
+      <div class="field">
+        <label for="password-confirm">Confirm new password</label>
+        <input id="password-confirm" type="password" autocomplete="new-password" />
+        <p class="field-help">Type the new password twice. Leave both new fields empty only to remove a password that is already set. An empty password cannot replace an empty password.</p>
+      </div>
+    </div>
+  `;
+  els.toolFooter.innerHTML = `
+    <button type="button" class="button button-primary" data-action="confirm-password">Change password</button>
+  `;
+}
+
+async function refreshStoreViews() {
+  const storesPayload = await api("/api/stores");
+  state.stores = storesPayload.stores;
+  renderStats();
+  renderStores();
+  renderHierarchy();
+  if (!state.detail) {
+    return;
+  }
+  const updated = findDetailRecord(state.detail.kind, state.detail.storeName, state.detail.certName);
+  if (!updated) {
+    closeDetail();
+    return;
+  }
+  state.detail = updated;
+  renderDetail();
+}
+
+async function openTool(mode, storeName, certName) {
+  if (!storeName || !els.toolModal) {
+    return;
+  }
+  state.tool = { mode, storeName, certName: certName || null, material: null };
+  const titles = {
+    inspect: ["Certificate info", "OpenSSL fields and chain"],
+    convert: ["Convert PEM / DER", "Certificate or unencrypted key"],
+    password: ["Change password", "Encrypted key or PKCS#12"],
+  };
+  const [title, kicker] = titles[mode] || titles.inspect;
+  els.toolTitle.textContent = title;
+  els.toolKicker.textContent = certName ? `${kicker} · ${certName}` : `${kicker} · ${storeName}`;
+  els.toolBody.innerHTML = `<p class="meta-label">Loading…</p>`;
+  els.toolFooter.innerHTML = "";
+  els.toolModal.hidden = false;
+
+  try {
+    if (mode === "inspect") {
+      const info = await api(entityPath(storeName, certName, "inspect"));
+      if (state.tool?.mode !== "inspect") {
+        return;
+      }
+      renderInspect(info);
+      return;
+    }
+    const material = await api(entityPath(storeName, certName, "material"));
+    if (!state.tool || state.tool.mode !== mode) {
+      return;
+    }
+    state.tool.material = material;
+    if (mode === "convert") {
+      renderConvert(material);
+    } else {
+      renderPassword(material);
+    }
+  } catch (error) {
+    showToast(error.message, "error");
+    closeTool();
+  }
+}
+
+function bytesToBase64(bytes) {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunk));
+  }
+  return btoa(binary);
+}
+
+async function handleConfirmConvert() {
+  const tool = state.tool;
+  if (!tool) {
+    return;
+  }
+  const source = document.getElementById("convert-source")?.value || "upload";
+  const to = document.getElementById("convert-to")?.value === "pem" ? "pem" : "der";
+  const destination = document.getElementById("convert-destination")?.value || "download";
+  const outputName = document.getElementById("convert-output")?.value.trim() || "";
+  const overwrite = document.getElementById("convert-overwrite")?.checked === true;
+  const body = {
+    source,
+    storeName: tool.storeName,
+    certName: tool.certName,
+    to,
+    destination,
+    outputName,
+    overwrite,
+    confirmSecret: false,
+  };
+
+  if (source === "store") {
+    const fileName = document.getElementById("convert-file")?.value || "";
+    if (!fileName) {
+      showToast("Choose a file in the store.", "error");
+      return;
+    }
+    body.fileName = fileName;
+    const selected = (tool.material?.files || []).find((file) => file.fileName === fileName);
+    if (selected?.kind === "key") {
+      const confirmed = window.confirm(
+        "This conversion reads and can write an unencrypted private key. The key is secret. Continue?",
+      );
+      if (!confirmed) {
+        return;
+      }
+      body.confirmSecret = true;
+    }
+  } else {
+    const file = document.getElementById("convert-upload")?.files?.[0];
+    const paste = document.getElementById("convert-paste")?.value || "";
+    if (!file && paste.trim().length === 0) {
+      showToast("Upload a PEM or DER file, or paste PEM text.", "error");
+      return;
+    }
+    if (file && file.size > 512 * 1024) {
+      showToast("That file is too large to convert.", "error");
+      return;
+    }
+    if (paste.includes("PRIVATE KEY")) {
+      const confirmed = window.confirm(
+        "This conversion reads and can write an unencrypted private key. The key is secret. Continue?",
+      );
+      if (!confirmed) {
+        return;
+      }
+      body.confirmSecret = true;
+    }
+    if (file) {
+      const hint = file.name.split(/[/\\]/).pop();
+      if (/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(hint)) {
+        body.fileName = hint;
+      }
+      body.contentBase64 = bytesToBase64(new Uint8Array(await file.arrayBuffer()));
+    } else {
+      body.contentBase64 = bytesToBase64(new TextEncoder().encode(paste));
+    }
+  }
+
+  setBusy(true, "Converting…");
+  try {
+    const response = await postConvert(body);
+    if (!response) {
+      return;
+    }
+    const contentType = response.headers.get("content-type") || "";
+    if (contentType.includes("application/json")) {
+      const payload = await response.json();
+      showToast(payload.message || "Saved the converted file.");
+    } else {
+      const blob = await response.blob();
+      const fileName =
+        filenameFromDisposition(response.headers.get("Content-Disposition")) || outputName || `converted.${to}`;
+      saveBlob(blob, fileName);
+      const stored = response.headers.get("X-Ssl-Gen-Stored");
+      showToast(stored ? `Saved ${stored} and started the download.` : `Downloading ${fileName}.`);
+    }
+    if (destination !== "download") {
+      await refreshStoreViews();
+    }
+    closeTool();
+  } catch (error) {
+    showToast(error.message, "error");
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function postConvert(body) {
+  const response = await fetch("/api/convert", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (response.status === 409 && body.overwrite !== true) {
+    const payload = await response.json().catch(() => ({}));
+    const confirmed = window.confirm(`${payload.message || "That file already exists."}\n\nOverwrite it?`);
+    if (!confirmed) {
+      return null;
+    }
+    return postConvert({ ...body, overwrite: true });
+  }
+  if (response.status === 400) {
+    const payload = await response.json().catch(() => ({}));
+    if (body.confirmSecret !== true && /requires confirmation/i.test(payload.message || "")) {
+      const confirmed = window.confirm(
+        "This conversion reads and can write an unencrypted private key. The key is secret. Continue?",
+      );
+      if (!confirmed) {
+        return null;
+      }
+      return postConvert({ ...body, confirmSecret: true });
+    }
+    throw new Error(payload.message || "Conversion failed");
+  }
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.message || "Conversion failed");
+  }
+  return response;
+}
+
+async function handleConfirmPassword() {
+  const tool = state.tool;
+  if (!tool) {
+    return;
+  }
+  const artifact = document.getElementById("password-artifact")?.value;
+  const currentPassword = document.getElementById("password-current")?.value ?? "";
+  const newPassword = document.getElementById("password-new")?.value ?? "";
+  const confirmPassword = document.getElementById("password-confirm")?.value ?? "";
+  const entry = tool.material?.password?.[artifact];
+  if (!artifact || !entry?.present) {
+    showToast("Choose a private key or PKCS#12 file.", "error");
+    return;
+  }
+  if (newPassword !== confirmPassword) {
+    showToast("New password and confirmation do not match.", "error");
+    return;
+  }
+  if (entry.passwordRequired && currentPassword.length === 0) {
+    showToast("Current password is required.", "error");
+    return;
+  }
+  if (!entry.passwordRequired && newPassword.length === 0) {
+    showToast("This file already has no password. Enter a new one.", "error");
+    return;
+  }
+
+  setBusy(true, "Updating password…");
+  try {
+    const result = await api(entityPath(tool.storeName, tool.certName, "password"), {
+      method: "POST",
+      body: JSON.stringify({ artifact, currentPassword, newPassword, confirmPassword }),
+    });
+    showToast(result.message || "Password updated.");
+    await refreshStoreViews();
+    closeTool();
+  } catch (error) {
+    showToast(error.message, "error");
+  } finally {
+    const current = document.getElementById("password-current");
+    const next = document.getElementById("password-new");
+    const confirm = document.getElementById("password-confirm");
+    if (current) current.value = "";
+    if (next) next.value = "";
+    if (confirm) confirm.value = "";
+    setBusy(false);
+  }
+}
+
+function syncConvertFields() {
+  const source = document.getElementById("convert-source")?.value;
+  const storeField = document.getElementById("convert-store-field");
+  const uploadField = document.getElementById("convert-upload-field");
+  const pasteField = document.getElementById("convert-paste-field");
+  const upload = source === "upload";
+  if (storeField) storeField.hidden = upload;
+  if (uploadField) uploadField.hidden = !upload;
+  if (pasteField) pasteField.hidden = !upload;
+
+  const to = document.getElementById("convert-to")?.value === "pem" ? "pem" : "der";
+  const output = document.getElementById("convert-output");
+  if (!output || output.dataset.touched === "true") {
+    return;
+  }
+  if (upload) {
+    const fileName = document.getElementById("convert-upload")?.files?.[0]?.name || `converted.${to}`;
+    output.value = suggestedConvertName(fileName, to);
+    return;
+  }
+  const fileName = document.getElementById("convert-file")?.value || "";
+  const selected = (state.tool?.material?.files || []).find((file) => file.fileName === fileName);
+  output.value = suggestedConvertName(fileName, to, selected?.kind);
+}
+
+function syncPasswordHelp() {
+  const artifact = document.getElementById("password-artifact")?.value || "key";
+  const help = document.getElementById("password-help");
+  const entry = state.tool?.material?.password?.[artifact];
+  if (help) {
+    help.textContent = passwordHelp(entry, artifact === "key" ? "private key" : "PKCS#12 file");
+  }
+  ["password-current", "password-new", "password-confirm"].forEach((id) => {
+    const field = document.getElementById(id);
+    if (field) field.value = "";
+  });
+}
+
+function handleToolChange(event) {
+  if (event.target.id === "convert-output") {
+    event.target.dataset.touched = "true";
+    return;
+  }
+  if (event.target.id === "convert-source" || event.target.id === "convert-file" || event.target.id === "convert-to" || event.target.id === "convert-upload") {
+    if (event.target.id !== "convert-output") {
+      const output = document.getElementById("convert-output");
+      if (output && event.target.id !== "convert-source") {
+        delete output.dataset.touched;
+      }
+    }
+    syncConvertFields();
+  }
+  if (event.target.id === "password-artifact") {
+    syncPasswordHelp();
+  }
+}
+
+function handleToolClick(event) {
+  const button = event.target.closest("[data-action]");
+  if (!button || !els.toolModal?.contains(button)) {
+    return;
+  }
+  const action = button.dataset.action;
+  if (action === "close-tool") {
+    closeTool();
+  } else if (action === "confirm-convert") {
+    handleConfirmConvert();
+  } else if (action === "confirm-password") {
+    handleConfirmPassword();
+  }
+}
+
 function handleStoreAction(event) {
   const button = event.target.closest("[data-action]");
   if (!button) {
@@ -1870,6 +2478,12 @@ function handleStoreAction(event) {
     handleDownload(storeName, certName || null, button.dataset.artifact).catch((error) => {
       showToast(error.message, "error");
     });
+  } else if (action === "view-info" && storeName) {
+    openTool("inspect", storeName, certName || null);
+  } else if (action === "open-convert" && storeName) {
+    openTool("convert", storeName, certName || null);
+  } else if (action === "open-password" && storeName) {
+    openTool("password", storeName, certName || null);
   } else if (action === "copy-path") {
     handleCopyPath().catch((error) => showToast(error.message, "error"));
   } else if (action === "copy-pem") {
@@ -1932,8 +2546,15 @@ document.getElementById("stores-export-all-button").addEventListener("click", ()
 document.getElementById("stores-import-button").addEventListener("click", openImport);
 els.archiveModal.addEventListener("click", handleArchiveClick);
 els.archiveModal.addEventListener("change", handleArchiveChange);
+els.toolModal?.addEventListener("click", handleToolClick);
+els.toolModal?.addEventListener("change", handleToolChange);
+els.toolModal?.addEventListener("input", handleToolChange);
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") {
+    return;
+  }
+  if (els.toolModal && !els.toolModal.hidden) {
+    closeTool();
     return;
   }
   if (els.archiveModal && !els.archiveModal.hidden) {

@@ -318,6 +318,16 @@ Root CA, certificate, and advanced settings stay in collapsible sections. Collap
 
 The Certificates page filters the list by name, subject, or SAN.
 
+### Certificate info, conversion, and passwords
+
+From a certificate on the Certificates page, the dashboard, or the detail dialog:
+
+- **Info** shows OpenSSL-style fields for the `.crt` and, when `<name>-fullchain.pem` is present, each certificate in that file: subject, issuer, SANs, validity, serial, SHA-1 and SHA-256 fingerprints, key type and size, and basic constraints, key usage, and extended key usage. The chain is marked incomplete when the last certificate is not self-signed, and the order is marked wrong when an issuer does not match the next subject or the file does not start with this certificate.
+- **Convert** turns one X.509 certificate between PEM and DER. An unencrypted PEM or DER private key can be converted as well. Download the result, save it in the same store (`name.der` / `name.pem`, or `name-key.der` / `name-key.pem` for a key), or both. An existing file is kept until you confirm overwrite. PKCS#12 and encrypted keys are refused here; change those passwords instead.
+- **Change password** rewrites a private key or `.p12` that is already in the store. The current password is required when one is set. An unencrypted key, or a file with an empty password, can take a new password with the current field left blank. Type the new password twice. An empty password cannot replace an empty password.
+
+These actions stay inside `./certs`. Password changes and private-key conversion rewrite secret material. The UI remains localhost-only.
+
 ---
 
 ## 8. Using the Certificates
@@ -413,6 +423,7 @@ A TAR that includes private keys is a secrets backup. Treat it like a password-v
 - Set `ROOT_CA_PASSPHRASE` to encrypt the Root CA private key. You will need it when signing new certificates.
 - Self-signed certificates are intended for **local development and testing**, not production use.
 - Do not commit `.env`, generated keys, or certificate archives to version control. The web UI listens on localhost (`WEBUI_BIND` must stay `127.0.0.1`) and has no login.
+- PEM/DER conversion and password changes stay inside `./certs` and refuse paths or symlinks that leave it. Passphrases go to OpenSSL through the environment, not command-line arguments. API responses and toasts report success or failure only. Converting a private key, or changing a `.key` or `.p12` password, rewrites secret material on disk. PKCS#12 bundles and encrypted keys are outside the converter.
 
 ---
 
