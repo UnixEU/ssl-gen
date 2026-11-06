@@ -263,17 +263,60 @@ make webui-down
 
 On startup the UI creates its own self-signed HTTPS certificate in `ui-ssl/`. Accept that certificate in the browser to open the UI. To trust certificates you generate, install the Root CA from `./certs/<ROOT_CA_NAME>/`.
 
-Generated files still land in `./certs/<ROOT_CA_NAME>/` because the web UI bind-mounts the project directory at `/project`, the same way the `ssl-gen` service does.
+Generated files still land in `./certs/<ROOT_CA_NAME>/` because the web UI bind-mounts the project directory at `/project`, the same way the `ssl-gen` service does. The dashboard lists Root CAs and certificates that are expired or within 30 days of `notAfter`.
 
-From a Root CA or certificate you can download the public `.crt`, the full chain, and the `.p12` when those files exist. Private `.key` downloads are opt-in: the button is marked secret and asks for confirmation before the file is saved. The dashboard lists Root CAs and certificates that are expired or within 30 days of `notAfter`.
+Screen recordings and screenshots — TAR export and import, hierarchy, presets, Trust Guide, and search — are in [docs/media](docs/media/).
 
-The dashboard and Certificates page can also export a `.tar.gz` of one Root CA store, one certificate plus its public Root CA, or every store under `./certs`. Private keys and `.p12` files are omitted unless you include them, and you can encrypt the archive with an OpenSSL passphrase. Import previews the archive first, then skips, renames, or overwrites existing files. Imported files stay inside `./certs`.
+### Downloads
 
-The Hierarchy page draws one Root CA above the certificates in `./certs/<ROOT_CA_NAME>/`. A solid line means that certificate's issuer matches the selected Root CA. Click a node to open the same details and downloads as the Certificates page.
+On the Certificates page, or from a node on Hierarchy, download the files that exist for a Root CA or a signed certificate:
 
-Generate can start from a preset — localhost, a `*.local` name plus an optional LAN IP, or a wildcard such as `*.dev.local` — with Root CA, certificate, and advanced settings in collapsible sections. Trust Guide copies the macOS, Linux, and Windows install commands and downloads only the public Root CA `.crt`. The Certificates page filters stores by name, subject, or SAN.
+- `.crt` — the public certificate
+- **Full chain** — `<name>-fullchain.pem`, when the generator wrote one
+- `.p12` — the PKCS#12 bundle, when `EXPORT_P12` produced one
+- `.key` — the private key, after you confirm the prompt
 
-Screen recordings and screenshots are in [docs/media](docs/media/).
+The `.key` button is marked secret. The prompt tells you that anyone with the file can impersonate the certificate. The detail dialog also copies the path under `./certs/<ROOT_CA_NAME>/` and the public PEM.
+
+### Export and import
+
+Dashboard and Certificates both offer **Export all** and **Import TAR**. Each Root CA card has **Export TAR** for that store. On the Certificates page, each signed certificate has **Export TAR** for that certificate.
+
+| Scope | Default contents | File name |
+|-------|------------------|-----------|
+| Store | Public files in `./certs/<ROOT_CA_NAME>/` | `ssl-gen-<ROOT_CA_NAME>.tar.gz` |
+| Certificate | That certificate's public files, plus the public Root CA `.crt` from the same store | `ssl-gen-<ROOT_CA_NAME>-<CERT_NAME>.tar.gz` |
+| All stores | Public files from every store under `./certs` | `ssl-gen-certs.tar.gz` |
+
+Public files are the `.crt`, `.csr`, `.pem`, full chain, and extensions file when they are on disk. Check **Include private keys** and confirm to add `.key` and `.p12` for the certificates in that scope, including Root CA keys on a store or all-stores export. A certificate export adds those key files for the selected certificate and still includes the store's public Root CA `.crt`. Read [Private keys in a TAR](#private-keys-in-a-tar) before you move an archive that contains keys.
+
+Exports include `manifest.json` at the top of the archive. It records `exportedAt`, the scope (`store`, `certificate`, or `all`), the store and certificate name when those apply, and one entry per name with its file paths and `notAfter`. Passphrases and PKCS#12 passwords stay out of it. When an imported archive contains `manifest.json`, import uses it for names and expiry and leaves that file out of `./certs`.
+
+**Encrypt with OpenSSL AES-256** is optional. The download is then named `.tar.gz.enc`, and import asks for that passphrase. The passphrase is used for that download only.
+
+**Import TAR** takes a `.tar`, `.tar.gz`, or encrypted archive from this UI. Preview the file first. Extraction stays inside `./certs/<store>/`. When a file is already there, choose:
+
+- **Skip** — leave the existing file. This is the default.
+- **Rename** — write the incoming file beside it, with an `-imported` suffix.
+- **Overwrite** — replace the existing file. Confirm **Replace existing files in ./certs** before the import runs.
+
+### Hierarchy
+
+Open **Hierarchy** and select a Root CA. The page draws that CA above the certificates stored in `./certs/<ROOT_CA_NAME>/`. A solid line means the certificate issuer matches the selected Root CA. A dashed line means the issuer is different. Click a node for the same details and downloads as the Certificates page.
+
+### Generate presets and Trust Guide
+
+**Generate** can start from a preset. Presets fill the certificate name and SAN list and leave the Root CA fields unchanged. Artifacts are still written to `./certs/<ROOT_CA_NAME>/`.
+
+- **localhost** — `localhost`, `*.localhost`, `127.0.0.1`, and `::1`
+- **\*.local / LAN IP** — `host.local` and `*.local`, plus an optional LAN address as an IP SAN
+- **Wildcard** — `*.<apex>` and the apex name. The field starts at `dev.local`.
+
+Root CA, certificate, and advanced settings stay in collapsible sections. Collapsed sections are still included when you generate.
+
+**Trust Guide** copies the macOS, Linux, and Windows install commands for the Root CA you select. **Download Root .crt** saves only the public certificate at `./certs/<ROOT_CA_NAME>/<ROOT_CA_NAME>.crt`.
+
+The Certificates page filters the list by name, subject, or SAN.
 
 ---
 
@@ -354,16 +397,22 @@ sudo update-ca-certificates
 
 **Windows:** Import `my-root-ca.crt` into *Trusted Root Certification Authorities* via `certmgr.msc`.
 
+The web UI [Trust Guide](#generate-presets-and-trust-guide) copies these commands for the Root CA you select and downloads the public `.crt` only.
+
 ---
 
 ## 10. Security Notes
 
-- Private keys (`.key`) and `.p12` files are created with `chmod 600`.
-- A TAR or `.tar.gz` export that includes private keys (`.key` or `.p12`) is a bundle of secrets. Do not commit it, email it, or leave it in a shared folder. Encrypting the archive does not make it safe to publish; keep the passphrase separate from the file. The manifest lists certificate names, file names, `notAfter`, and `exportedAt` only — it does not contain passphrases or PKCS#12 passwords. Import rejects paths outside `./certs`.
-- Root CA and server keys are stored in plain files on disk — restrict filesystem access to the output folder.
-- Set `ROOT_CA_PASSPHRASE` to encrypt the Root CA private key; you will need it when signing new certificates.
+Private keys (`.key`) and `.p12` files are created with `chmod 600`.
+
+### Private keys in a TAR
+
+A TAR that includes private keys is a secrets backup. Treat it like a password-vault dump: anyone who has the file can impersonate those certificates. Prefer the default public-only export unless you need the keys to restore a machine. Do not email the archive, paste it into chat, commit it, or leave it in a shared folder. An encrypted archive is still that backup; keep its passphrase apart from the file. `manifest.json` lists certificate names, file names, `notAfter`, and `exportedAt`. Import refuses paths that leave `./certs`.
+
+- Root CA and server keys are stored in plain files on disk. Restrict filesystem access to `./certs/<ROOT_CA_NAME>/`.
+- Set `ROOT_CA_PASSPHRASE` to encrypt the Root CA private key. You will need it when signing new certificates.
 - Self-signed certificates are intended for **local development and testing**, not production use.
-- Do not commit `.env` or generated keys and certificates to version control.
+- Do not commit `.env`, generated keys, or certificate archives to version control. The web UI listens on localhost (`WEBUI_BIND` must stay `127.0.0.1`) and has no login.
 
 ---
 
