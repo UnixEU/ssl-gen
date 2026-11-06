@@ -106,24 +106,75 @@ process_csv_entries() {
   IFS="${OLD_IFS}"
 }
 
+validate_key_size() {
+  case "${KEY_TYPE}" in
+    rsa)
+      case "${KEY_SIZE}" in
+        ""|2048|3072|4096) ;;
+        *) fail "KEY_SIZE for rsa must be 2048, 3072, or 4096" ;;
+      esac
+      ;;
+    ec)
+      case "${KEY_SIZE}" in
+        ""|256|384|521) ;;
+        *) fail "KEY_SIZE for ec must be 256, 384, or 521" ;;
+      esac
+      ;;
+  esac
+}
+
+# Explicit KEY_SIZE applies to both a new Root CA and the certificate.
+# When KEY_SIZE is unset, RSA keeps the historical split: 4096 for the Root CA
+# and 2048 for the certificate. EC defaults to P-256 (prime256v1).
+rsa_bits() {
+  key_role="$1"
+  if [ -n "${KEY_SIZE}" ]; then
+    printf '%s' "${KEY_SIZE}"
+    return
+  fi
+  if [ "${key_role}" = "cert" ]; then
+    printf '%s' "2048"
+  else
+    printf '%s' "4096"
+  fi
+}
+
+ec_curve() {
+  size="${KEY_SIZE:-256}"
+  case "${size}" in
+    256) printf '%s' "prime256v1" ;;
+    384) printf '%s' "secp384r1" ;;
+    521) printf '%s' "secp521r1" ;;
+  esac
+}
+
+key_label() {
+  key_role="$1"
+  if [ "${KEY_TYPE}" = "rsa" ]; then
+    printf '%s-bit RSA' "$(rsa_bits "${key_role}")"
+  else
+    printf '%s' "$(ec_curve)"
+  fi
+}
+
 generate_private_key() {
   output_key="$1"
   role="$2"
 
   if [ "${KEY_TYPE}" = "rsa" ]; then
-    bits=4096
-    [ "${role}" = "cert" ] && bits=2048
+    bits=$(rsa_bits "${role}")
     if [ -n "${passphrase}" ]; then
       openssl genrsa -aes256 -passout pass:"${passphrase}" -out "${output_key}" "${bits}"
     else
       openssl genrsa -out "${output_key}" "${bits}"
     fi
   else
+    curve=$(ec_curve)
     if [ -n "${passphrase}" ]; then
       openssl genpkey -algorithm EC -aes256 -pass pass:"${passphrase}" \
-        -pkeyopt ec_paramgen_curve:prime256v1 -out "${output_key}"
+        -pkeyopt "ec_paramgen_curve:${curve}" -out "${output_key}"
     else
-      openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:prime256v1 -out "${output_key}"
+      openssl genpkey -algorithm EC -pkeyopt "ec_paramgen_curve:${curve}" -out "${output_key}"
     fi
   fi
   chmod 600 "${output_key}"
@@ -178,6 +229,7 @@ require_var CERT_DNS_NAMES
 require_var CERT_VALIDITY_DAYS
 
 KEY_TYPE="${KEY_TYPE:-ec}"
+KEY_SIZE="${KEY_SIZE:-}"
 FORCE_REGENERATE="${FORCE_REGENERATE:-no}"
 EXPORT_P12="${EXPORT_P12:-yes}"
 P12_PASSWORD="${P12_PASSWORD:-changeit}"
@@ -188,6 +240,8 @@ case "${KEY_TYPE}" in
   ec|rsa) ;;
   *) fail "KEY_TYPE must be 'ec' or 'rsa'" ;;
 esac
+
+validate_key_size
 
 validate_safe_name "ROOT_CA_NAME" "${ROOT_CA_NAME}"
 validate_safe_name "CERT_NAME" "${CERT_NAME}"
@@ -244,7 +298,7 @@ if [ -f "${ROOT_CA_KEY}" ] && [ -f "${ROOT_CA_CERT}" ]; then
       || fail "Could not unlock existing Root CA key. Check ROOT_CA_PASSPHRASE."
   fi
 else
-  echo "Generating new Root CA '${ROOT_CA_NAME}' (${KEY_TYPE} key)..."
+  echo "Generating new Root CA '${ROOT_CA_NAME}' ($(key_label ca))..."
   passphrase="${ROOT_CA_PASSPHRASE}"
   generate_private_key "${ROOT_CA_KEY}" "ca"
 
@@ -304,7 +358,7 @@ if [ -n "${CERT_IP_ADDRESSES}" ]; then
 fi
 [ "${has_san}" -eq 1 ] || fail "At least one SAN entry (DNS or IP) is required in CERT_DNS_NAMES or CERT_IP_ADDRESSES"
 
-echo "Generating certificate '${CERT_NAME}' (${KEY_TYPE} key)..."
+echo "Generating certificate '${CERT_NAME}' ($(key_label cert))..."
 passphrase=""
 generate_private_key "${CERT_KEY}" "cert"
 

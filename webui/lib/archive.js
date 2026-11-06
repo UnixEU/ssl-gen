@@ -13,7 +13,8 @@ const {
 const { packArchive, unpackArchive, MAX_ARCHIVE_BYTES } = require("./tar");
 
 const POLICIES = new Set(["skip", "rename", "overwrite"]);
-const SCOPES = new Set(["all", "store", "certificate"]);
+const SCOPES = new Set(["all", "store", "root", "certificate", "selection"]);
+const SELECTION_SCOPES = new Set(["store", "root", "certificate"]);
 const ALLOWED_EXTENSIONS = new Set([".crt", ".key", ".csr", ".pem", ".p12", ".cnf"]);
 const FILE_SUFFIXES = [
   "-fullchain.pem",
@@ -181,6 +182,28 @@ function filesForStore(storeReal, storeName, includeKeys) {
     .filter(Boolean);
 }
 
+function filesForRoot(storeReal, storeName, includeKeys) {
+  const crtName = `${storeName}.crt`;
+  let crtInfo;
+  try {
+    crtInfo = fs.lstatSync(path.join(storeReal, crtName));
+  } catch {
+    crtInfo = null;
+  }
+  if (!crtInfo || !crtInfo.isFile()) {
+    throw httpError(404, `Root CA certificate '${storeName}.crt' was not found`);
+  }
+
+  const wanted = new Set([crtName]);
+  if (includeKeys) {
+    wanted.add(`${storeName}.key`);
+  }
+
+  return selectableNames(storeReal, includeKeys, wanted)
+    .map((fileName) => describeFile(storeReal, storeName, fileName))
+    .filter(Boolean);
+}
+
 function filesForCertificate(storeReal, storeName, certName, includeKeys) {
   assertSegment(certName, "Certificate name");
   const certPath = path.join(storeReal, `${certName}.crt`);
@@ -219,6 +242,11 @@ function collectFiles(projectRoot, options) {
     return filesForStore(confinedStore(projectRoot, storeName), storeName, includeKeys);
   }
 
+  if (options.scope === "root") {
+    const storeName = options.storeName;
+    return filesForRoot(confinedStore(projectRoot, storeName), storeName, includeKeys);
+  }
+
   if (options.scope === "certificate") {
     const storeName = options.storeName;
     return filesForCertificate(
@@ -229,7 +257,63 @@ function collectFiles(projectRoot, options) {
     );
   }
 
+  if (options.scope === "selection") {
+    return dedupeFiles(
+      (options.selection || []).flatMap((item) =>
+        collectFiles(projectRoot, { ...item, includeKeys }),
+      ),
+    );
+  }
+
   throw httpError(400, "Unknown export scope");
+}
+
+function dedupeFiles(files) {
+  const seen = new Set();
+  const unique = [];
+  for (const file of files) {
+    if (seen.has(file.archivePath)) {
+      continue;
+    }
+    seen.add(file.archivePath);
+    unique.push(file);
+  }
+  return unique;
+}
+
+function normalizeSelection(items) {
+  if (!Array.isArray(items) || items.length === 0) {
+    throw httpError(400, "Select at least one Root CA or certificate");
+  }
+  if (items.length > 100) {
+    throw httpError(400, "Select fewer certificates or stores");
+  }
+
+  const normalized = [];
+  const seen = new Set();
+  for (const item of items) {
+    const scope = item && typeof item === "object" ? item.scope : "";
+    if (!SELECTION_SCOPES.has(scope)) {
+      throw httpError(400, "Unknown export scope");
+    }
+
+    const storeName = typeof item.storeName === "string" ? item.storeName : "";
+    assertSegment(storeName, "Store name");
+    let certName = null;
+    if (scope === "certificate") {
+      certName = typeof item.certName === "string" ? item.certName : "";
+      assertSegment(certName, "Certificate name");
+    }
+
+    const key = `${scope}\0${storeName}\0${certName || ""}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    normalized.push({ scope, storeName, certName });
+  }
+
+  return normalized;
 }
 
 function buildManifest(files, options) {
@@ -253,25 +337,46 @@ function buildManifest(files, options) {
     }
   }
 
-  return {
+  const manifest = {
     exportedAt: new Date().toISOString(),
     scope: options.scope,
-    store: options.scope === "all" ? null : options.storeName,
+    store: options.scope === "all" || options.scope === "selection" ? null : options.storeName,
     certificate: options.scope === "certificate" ? options.certName : null,
     entries: [...groups.values()].sort((left, right) =>
       `${left.store}/${left.name}`.localeCompare(`${right.store}/${right.name}`),
     ),
   };
+
+  if (options.scope === "selection") {
+    manifest.items = (options.selection || []).map((item) => ({
+      scope: item.scope,
+      store: item.storeName,
+      certificate: item.certName,
+    }));
+  }
+
+  return manifest;
 }
 
 function archiveFileName(options, encrypted) {
+  const suffix = encrypted ? ".tar.gz.enc" : ".tar.gz";
+  if (options.scope === "selection") {
+    const items = options.items || [];
+    if (items.length === 1) {
+      return archiveFileName(items[0], encrypted);
+    }
+    return `ssl-gen-selected${suffix}`;
+  }
+
   let base = "ssl-gen-certs";
   if (options.scope === "store") {
     base = `ssl-gen-${options.storeName}`;
+  } else if (options.scope === "root") {
+    base = `ssl-gen-${options.storeName}-root`;
   } else if (options.scope === "certificate") {
     base = `ssl-gen-${options.storeName}-${options.certName}`;
   }
-  return encrypted ? `${base}.tar.gz.enc` : `${base}.tar.gz`;
+  return `${base}${suffix}`;
 }
 
 function opensslCipher(input, passphrase, decrypt) {
@@ -328,14 +433,21 @@ function exportArchive(projectRoot, options = {}) {
     throw httpError(400, "Passphrase is too long");
   }
 
-  if (scope !== "all") {
+  let selection = null;
+  if (scope === "selection") {
+    selection = normalizeSelection(options.items);
+  } else if (scope !== "all") {
     assertSegment(options.storeName, "Store name");
   }
   if (scope === "certificate") {
     assertSegment(options.certName, "Certificate name");
   }
 
-  const files = collectFiles(projectRoot, { ...options, includeKeys });
+  const files = collectFiles(projectRoot, {
+    ...options,
+    includeKeys,
+    selection,
+  });
 
   if (files.length === 0) {
     throw httpError(404, "Nothing to export");
@@ -345,6 +457,7 @@ function exportArchive(projectRoot, options = {}) {
     scope,
     storeName: options.storeName || null,
     certName: options.certName || null,
+    selection,
   });
   let data = packArchive([
     {
@@ -367,7 +480,7 @@ function exportArchive(projectRoot, options = {}) {
   return {
     data,
     fileName: archiveFileName(
-      { scope, storeName: options.storeName, certName: options.certName },
+      { scope, storeName: options.storeName, certName: options.certName, items: selection },
       encrypt,
     ),
     manifest,

@@ -181,8 +181,13 @@ code {
 
 .topbar-actions,
 .panel-actions,
-.form-footer {
+.form-footer,
+.panel-header {
   flex-wrap: wrap;
+}
+
+.topbar-actions[hidden] {
+  display: none;
 }
 
 .view {
@@ -583,6 +588,26 @@ details.form-section .field-grid {
   justify-content: space-between;
   gap: 12px;
   align-items: flex-start;
+}
+
+.identity-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.select-check {
+  display: inline-flex;
+  padding-top: 3px;
+}
+
+.select-check input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
 }
 
 .store-header h3,

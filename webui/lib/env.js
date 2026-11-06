@@ -21,6 +21,7 @@ const ENV_KEYS = [
   "CERT_IP_ADDRESSES",
   "CERT_VALIDITY_DAYS",
   "KEY_TYPE",
+  "KEY_SIZE",
   "FORCE_REGENERATE",
   "EXPORT_P12",
   "P12_PASSWORD",
@@ -60,7 +61,7 @@ const ENV_SECTIONS = {
   },
   advanced: {
     title: "Advanced",
-    keys: ["KEY_TYPE", "FORCE_REGENERATE", "EXPORT_P12", "P12_PASSWORD"],
+    keys: ["KEY_TYPE", "KEY_SIZE", "FORCE_REGENERATE", "EXPORT_P12", "P12_PASSWORD"],
   },
   webui: {
     title: "Web UI",
@@ -80,7 +81,9 @@ const ENV_COMMENTS = {
   CERT_IP_ADDRESSES:
     "Optional additional IP SAN entries, separated by commas",
   CERT_VALIDITY_DAYS: "SSL certificate validity in days",
-  KEY_TYPE: "Key algorithm: ec (P-256, default) or rsa",
+  KEY_TYPE: "Key algorithm: ec or rsa",
+  KEY_SIZE:
+    "Key size. EC: 256 (P-256 / prime256v1), 384 (P-384 / secp384r1), or 521 (P-521 / secp521r1).\nRSA: 2048, 3072, or 4096. Used for the certificate and for a new Root CA.\nLeave empty to keep the historical default: P-256, or a 4096-bit RSA Root CA and a 2048-bit RSA certificate.",
   FORCE_REGENERATE:
     "Overwrite an existing certificate with the same CERT_NAME: yes or no",
   EXPORT_P12: "Export a PKCS#12 (.p12) bundle: yes or no",
@@ -91,6 +94,30 @@ const ENV_COMMENTS = {
 
 function trim(value) {
   return String(value).trim();
+}
+
+const RSA_KEY_SIZES = ["2048", "3072", "4096"];
+const EC_KEY_SIZES = ["256", "384", "521"];
+
+function keySizeError(keyType, keySize) {
+  const type = trim(keyType || "");
+  if (type !== "rsa" && type !== "ec") {
+    return null;
+  }
+
+  const raw = trim(keySize ?? "");
+  if (!raw) {
+    return null;
+  }
+
+  const allowed = type === "rsa" ? RSA_KEY_SIZES : EC_KEY_SIZES;
+  if (allowed.includes(raw)) {
+    return null;
+  }
+
+  return type === "rsa"
+    ? "KEY_SIZE for rsa must be 2048, 3072, or 4096"
+    : "KEY_SIZE for ec must be 256, 384, or 521";
 }
 
 function parseEnvFile(content) {
@@ -232,6 +259,11 @@ function validateConfig(values) {
 
   if (!["ec", "rsa"].includes(values.KEY_TYPE ?? "ec")) {
     errors.push("KEY_TYPE must be 'ec' or 'rsa'");
+  } else {
+    const sizeError = keySizeError(values.KEY_TYPE ?? "ec", values.KEY_SIZE);
+    if (sizeError) {
+      errors.push(sizeError);
+    }
   }
 
   const dnsNames = (values.CERT_DNS_NAMES ?? "")
@@ -271,4 +303,5 @@ module.exports = {
   readEnvFile,
   writeEnvFile,
   validateConfig,
+  keySizeError,
 };

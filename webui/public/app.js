@@ -15,6 +15,7 @@ const state = {
   storeQuery: "",
   activePreset: "",
   generateOpen: null,
+  selection: new Set(),
 };
 
 let applyingPreset = false;
@@ -84,6 +85,11 @@ const fieldMeta = {
     label: "Key Type",
     type: "select",
     options: ["ec", "rsa"],
+  },
+  KEY_SIZE: {
+    label: "Key Size",
+    type: "select",
+    help: "Saved as KEY_SIZE. Used for this certificate and for a new Root CA.",
   },
   FORCE_REGENERATE: {
     label: "Force Regenerate",
@@ -212,11 +218,88 @@ function formatSubject(subject = "") {
   return subject.replace(/^subject=/, "").trim() || "Unknown";
 }
 
+const KEY_SIZE_OPTIONS = {
+  ec: [
+    { value: "256", label: "P-256 (prime256v1)" },
+    { value: "384", label: "P-384 (secp384r1)" },
+    { value: "521", label: "P-521 (secp521r1)" },
+  ],
+  rsa: [
+    { value: "2048", label: "2048" },
+    { value: "3072", label: "3072" },
+    { value: "4096", label: "4096" },
+  ],
+};
+
+function keyTypeOf(value) {
+  return value === "rsa" ? "rsa" : "ec";
+}
+
+function keySizeChoices(keyType) {
+  return KEY_SIZE_OPTIONS[keyTypeOf(keyType)];
+}
+
+function defaultKeySize(keyType) {
+  return keyTypeOf(keyType) === "rsa" ? "2048" : "256";
+}
+
+function resolvedKeySize(keyType, value) {
+  const choices = keySizeChoices(keyType);
+  const raw = String(value ?? "");
+  return choices.some((option) => option.value === raw) ? raw : defaultKeySize(keyType);
+}
+
+function keySizeSummary(keyType, value) {
+  const type = keyTypeOf(keyType);
+  const size = resolvedKeySize(type, value);
+  if (type === "rsa") {
+    return `${size}-bit`;
+  }
+  const choice = keySizeChoices(type).find((option) => option.value === size);
+  return choice ? choice.label.split(" ")[0] : `P-${size}`;
+}
+
+function syncKeySizeField(form) {
+  const typeField = form?.elements?.namedItem("KEY_TYPE");
+  const sizeField = form?.elements?.namedItem("KEY_SIZE");
+  if (!typeField || !sizeField) {
+    return;
+  }
+
+  const choices = keySizeChoices(typeField.value);
+  const selected = resolvedKeySize(typeField.value, sizeField.value);
+  sizeField.innerHTML = choices
+    .map(
+      (option) =>
+        `<option value="${escapeHtml(option.value)}"${option.value === selected ? " selected" : ""}>${escapeHtml(option.label)}</option>`,
+    )
+    .join("");
+  sizeField.value = selected;
+}
+
+function renderOptions(options, selected) {
+  return (options || [])
+    .map((option) => {
+      const optionValue = typeof option === "object" ? option.value : option;
+      const optionLabel = typeof option === "object" ? option.label : option;
+      const isSelected = optionValue === selected ? " selected" : "";
+      return `<option value="${escapeHtml(optionValue)}"${isSelected}>${escapeHtml(optionLabel)}</option>`;
+    })
+    .join("");
+}
+
 function renderField(key, prefix) {
   const meta = fieldMeta[key] || { label: key };
   const value = state.config[key] ?? "";
   const id = `${prefix}-${key}`;
   const fieldClass = meta.full ? "field full" : "field";
+  let options = meta.options || [];
+  let selectedValue = value;
+  if (key === "KEY_SIZE") {
+    const keyType = keyTypeOf(state.config.KEY_TYPE);
+    options = keySizeChoices(keyType);
+    selectedValue = resolvedKeySize(keyType, value);
+  }
 
   let control = `<input id="${id}" name="${key}" value="${escapeHtml(value)}" />`;
 
@@ -224,12 +307,7 @@ function renderField(key, prefix) {
     control = `<textarea id="${id}" name="${key}">${escapeHtml(value)}</textarea>`;
   } else if (meta.type === "select") {
     control = `<select id="${id}" name="${key}">
-      ${meta.options
-        .map(
-          (option) =>
-            `<option value="${option}" ${option === value ? "selected" : ""}>${option}</option>`,
-        )
-        .join("")}
+      ${renderOptions(options, selectedValue)}
     </select>`;
   } else if (meta.type === "password") {
     control = `<input id="${id}" name="${key}" type="password" value="${escapeHtml(value)}" autocomplete="off" />`;
@@ -451,7 +529,8 @@ function sectionSummary(name, values) {
     return values.CERT_COMMON_NAME || values.CERT_NAME || "Unset";
   }
   if (name === "advanced") {
-    return `${values.KEY_TYPE || "ec"} · regenerate ${values.FORCE_REGENERATE || "no"}`;
+    const keyType = values.KEY_TYPE || "ec";
+    return `${keyType} ${keySizeSummary(keyType, values.KEY_SIZE)} · regenerate ${values.FORCE_REGENERATE || "no"}`;
   }
   if (name === "webui") {
     return `${values.WEBUI_BIND || "127.0.0.1"}:${values.WEBUI_PORT || "8443"}`;
@@ -659,6 +738,85 @@ function renderExpiring() {
     .join("")}</div>`;
 }
 
+function selectionKey(kind, storeName, certName) {
+  if (kind === "certificate") {
+    return `certificate:${storeName}:${certName}`;
+  }
+  return `store:${storeName}`;
+}
+
+function parseSelectionKey(key) {
+  if (key.startsWith("certificate:")) {
+    const rest = key.slice("certificate:".length);
+    const splitAt = rest.indexOf(":");
+    return {
+      kind: "certificate",
+      storeName: rest.slice(0, splitAt),
+      certName: rest.slice(splitAt + 1),
+    };
+  }
+  return {
+    kind: "store",
+    storeName: key.slice("store:".length),
+    certName: null,
+  };
+}
+
+function selectionCheckbox(kind, storeName, certName) {
+  const key = selectionKey(kind, storeName, certName);
+  const checked = state.selection.has(key) ? " checked" : "";
+  const certAttr = certName ? ` data-cert="${escapeHtml(certName)}"` : "";
+  const label =
+    kind === "certificate"
+      ? `Select certificate ${certName}`
+      : `Select Root CA ${storeName}`;
+  return `<label class="select-check">
+    <input
+      type="checkbox"
+      data-select="${kind}"
+      data-store="${escapeHtml(storeName)}"${certAttr}${checked}
+      aria-label="${escapeHtml(label)}"
+    />
+  </label>`;
+}
+
+function pruneSelection() {
+  const valid = new Set();
+  for (const store of state.stores) {
+    valid.add(selectionKey("store", store.name));
+    for (const cert of store.certificates) {
+      valid.add(selectionKey("certificate", store.name, cert.name));
+    }
+  }
+  for (const key of state.selection) {
+    if (!valid.has(key)) {
+      state.selection.delete(key);
+    }
+  }
+}
+
+function syncExportSelectedButtons() {
+  const empty = state.selection.size === 0;
+  for (const id of ["dashboard-export-selected-button", "stores-export-selected-button"]) {
+    const button = document.getElementById(id);
+    if (!button) {
+      continue;
+    }
+    button.disabled = empty;
+    button.title = empty
+      ? "Select a Root CA or certificate first"
+      : "Export the selected Root CAs and certificates";
+  }
+}
+
+function syncSelectionChecks() {
+  document.querySelectorAll("[data-select]").forEach((box) => {
+    const key = selectionKey(box.dataset.select, box.dataset.store, box.dataset.cert);
+    box.checked = state.selection.has(key);
+  });
+  syncExportSelectedButtons();
+}
+
 function renderStoreCard(store, compact = false) {
   const rootExpiryClass = expiryRowClass(store.metadata?.notAfter);
   const reuseStoreButton =
@@ -707,17 +865,20 @@ function renderStoreCard(store, compact = false) {
 
       return `
         <div class="cert-row ${expiryRowClass(metadata.notAfter)}">
-          <div>
-            <button
-              type="button"
-              class="link-button"
-              data-action="show-detail"
-              data-kind="certificate"
-              data-store="${escapeHtml(store.name)}"
-              data-cert="${escapeHtml(cert.name)}"
-            >${escapeHtml(cert.name)}</button>
-            <div class="meta-label">${escapeHtml(formatSubject(metadata.subject))}</div>
-            <div class="meta-label">${escapeHtml(metadata.subjectAltName || "No SAN data")}</div>
+          <div class="identity-row">
+            ${selectionCheckbox("certificate", store.name, cert.name)}
+            <div>
+              <button
+                type="button"
+                class="link-button"
+                data-action="show-detail"
+                data-kind="certificate"
+                data-store="${escapeHtml(store.name)}"
+                data-cert="${escapeHtml(cert.name)}"
+              >${escapeHtml(cert.name)}</button>
+              <div class="meta-label">${escapeHtml(formatSubject(metadata.subject))}</div>
+              <div class="meta-label">${escapeHtml(metadata.subjectAltName || "No SAN data")}</div>
+            </div>
           </div>
           <div class="cert-actions">
             ${renderExpiryBadge(metadata.notAfter)}
@@ -770,16 +931,19 @@ function renderStoreCard(store, compact = false) {
   return `
     <article class="store-card ${rootExpiryClass}">
       <div class="store-header">
-        <div>
-          <h3><button
-            type="button"
-            class="link-button"
-            data-action="show-detail"
-            data-kind="root"
-            data-store="${escapeHtml(store.name)}"
-          >${escapeHtml(store.name)}</button></h3>
-          <p class="meta-label">${escapeHtml(formatSubject(store.metadata?.subject))}</p>
-          <p class="meta-label">${escapeHtml(store.relativePath || `./certs/${store.name}`)}</p>
+        <div class="identity-row">
+          ${selectionCheckbox("store", store.name)}
+          <div>
+            <h3><button
+              type="button"
+              class="link-button"
+              data-action="show-detail"
+              data-kind="root"
+              data-store="${escapeHtml(store.name)}"
+            >${escapeHtml(store.name)}</button></h3>
+            <p class="meta-label">${escapeHtml(formatSubject(store.metadata?.subject))}</p>
+            <p class="meta-label">${escapeHtml(store.relativePath || `./certs/${store.name}`)}</p>
+          </div>
         </div>
         <div class="store-actions">
           ${renderExpiryBadge(store.metadata?.notAfter)}
@@ -885,6 +1049,7 @@ function updateStoreSearchCount(stores) {
 
 function renderStores() {
   renderExpiring();
+  pruneSelection();
   const stores = sortedStores();
   updateStoreSearchCount(stores);
 
@@ -893,6 +1058,7 @@ function renderStores() {
     els.dashboardStores.innerHTML = empty;
     els.storesList.innerHTML = `<article class="panel"><div class="panel-body">${empty}</div></article>`;
     renderHierarchy();
+    syncExportSelectedButtons();
     return;
   }
 
@@ -915,6 +1081,7 @@ function renderStores() {
       .join("");
   }
   renderHierarchy();
+  syncExportSelectedButtons();
 }
 
 function selectedHierarchyName(stores) {
@@ -1211,6 +1378,14 @@ function renderTrustGuide() {
     .join("");
 }
 
+function syncHeaderActions(view) {
+  const actions = document.querySelector(".topbar-actions");
+  if (!actions) {
+    return;
+  }
+  actions.hidden = view !== "generate" && view !== "config";
+}
+
 function switchView(view) {
   state.activeView = view;
   document.querySelectorAll(".nav-link").forEach((button) => {
@@ -1223,6 +1398,7 @@ function switchView(view) {
   const meta = viewMeta[view];
   els.viewTitle.textContent = meta.title;
   els.viewDescription.textContent = meta.description;
+  syncHeaderActions(view);
   document.querySelector(`.nav-link[data-view="${view}"]`)?.scrollIntoView({
     inline: "nearest",
     block: "nearest",
@@ -1463,14 +1639,55 @@ async function handleCopyPem() {
   await copyText(pem, "Public PEM copied.");
 }
 
-function archiveScopeCopy(scope, storeName, certName) {
+function archiveScopeCopy(scope, storeName, certName, items) {
   if (scope === "all") {
     return "Every Root CA store under ./certs.";
   }
   if (scope === "store") {
-    return `Root CA store ./certs/${storeName}/.`;
+    return `Full chain / store ./certs/${storeName}/, including the Root CA and the certificates signed under it.`;
   }
-  return `Certificate ${certName} from ${storeName}, plus that store's public Root CA certificate.`;
+  if (scope === "root") {
+    return `Root CA only: the public ${storeName}.crt certificate, without the other files in that store.`;
+  }
+  if (scope === "selection") {
+    const stores = (items || []).filter((item) => item.kind === "store").length;
+    const certificates = (items || []).filter((item) => item.kind === "certificate").length;
+    const parts = [];
+    if (stores) {
+      parts.push(`${stores} Root CA${stores === 1 ? "" : "s"}`);
+    }
+    if (certificates) {
+      parts.push(`${certificates} certificate${certificates === 1 ? "" : "s"}`);
+    }
+    return `Export selected: ${parts.join(" and ")}.`;
+  }
+  return `This certificate: ${certName} from ${storeName}, including its public files and that store's public Root CA.`;
+}
+
+function storeScopeField(help) {
+  return `
+    <div class="field">
+      <label for="archive-store-scope">Export scope</label>
+      <select id="archive-store-scope">
+        <option value="store" selected>Full chain / store</option>
+        <option value="root">Root CA only</option>
+      </select>
+      <span class="meta-label">${help}</span>
+    </div>
+  `;
+}
+
+function certificateScopeField(multiple) {
+  const label = multiple ? "These certificates" : "This certificate";
+  return `
+    <div class="field">
+      <label for="archive-cert-scope">Export scope</label>
+      <select id="archive-cert-scope" disabled>
+        <option>${label}</option>
+      </select>
+      <span class="meta-label">Public certificate files for the selection, plus each store's public Root CA. The rest of the project stays out.</span>
+    </div>
+  `;
 }
 
 function closeArchive() {
@@ -1483,18 +1700,55 @@ function closeArchive() {
   }
 }
 
+function exportDialogTitle(scope) {
+  if (scope === "all") {
+    return "Export All";
+  }
+  if (scope === "selection") {
+    return "Export selected";
+  }
+  return "Export TAR";
+}
+
+function exportScopeControl(target) {
+  if (target.scope === "store") {
+    return storeScopeField(
+      "Full chain / store includes this Root CA and the certificates under it. Root CA only is the public Root certificate.",
+    );
+  }
+  if (target.scope !== "selection") {
+    return "";
+  }
+
+  const stores = (target.items || []).filter((item) => item.kind === "store").length;
+  const certificates = (target.items || []).filter((item) => item.kind === "certificate").length;
+  const parts = [];
+  if (stores > 0) {
+    parts.push(
+      storeScopeField(
+        "Applies to each selected Root CA. Checked certificates are still exported as This certificate.",
+      ),
+    );
+  }
+  if (certificates > 0 && stores === 0) {
+    parts.push(certificateScopeField(certificates > 1));
+  }
+  return parts.join("");
+}
+
 function openExport(target) {
   state.archive = {
     mode: "export",
     scope: target.scope,
     storeName: target.storeName || null,
     certName: target.certName || null,
+    items: target.items || null,
   };
   state.archivePreview = null;
   els.archiveKicker.textContent = "Export";
-  els.archiveTitle.textContent = "Export TAR";
+  els.archiveTitle.textContent = exportDialogTitle(target.scope);
   els.archiveBody.innerHTML = `
-    <p class="panel-copy">${escapeHtml(archiveScopeCopy(target.scope, target.storeName, target.certName))}</p>
+    <p class="panel-copy" id="archive-scope-copy">${escapeHtml(archiveScopeCopy(target.scope, target.storeName, target.certName, target.items))}</p>
     <div class="callout" id="archive-warning">
       Private keys and PKCS#12 bundles stay out of the TAR unless you include them.
       A TAR that contains <code>.key</code> or <code>.p12</code> files is a bundle of secrets:
@@ -1502,6 +1756,7 @@ function openExport(target) {
       <p id="archive-key-warning" hidden>This download will include private keys.</p>
     </div>
     <div class="archive-options">
+      ${exportScopeControl(target)}
       <label class="toggle">
         <input type="checkbox" id="archive-include-keys" />
         <span>Include private keys (.key and .p12)</span>
@@ -1528,7 +1783,7 @@ function openImport() {
   state.archive = { mode: "import" };
   state.archivePreview = null;
   els.archiveKicker.textContent = "Import";
-  els.archiveTitle.textContent = "Import TAR";
+  els.archiveTitle.textContent = "Import";
   els.archiveBody.innerHTML = `
     <p class="panel-copy">
       Upload a <code>.tar</code> or <code>.tar.gz</code> archive. Files are extracted only into
@@ -1683,15 +1938,31 @@ async function handleConfirmExport() {
     }
   }
 
+  const pickedScope = document.getElementById("archive-store-scope")?.value;
+  let scope = archive.scope;
+  let items = null;
+  if (scope === "store" && pickedScope === "root") {
+    scope = "root";
+  }
+  if (scope === "selection") {
+    const storeScope = pickedScope === "root" ? "root" : "store";
+    items = (archive.items || []).map((item) =>
+      item.kind === "store"
+        ? { scope: storeScope, storeName: item.storeName }
+        : { scope: "certificate", storeName: item.storeName, certName: item.certName },
+    );
+  }
+
   setBusy(true, "Building archive...");
   try {
     const response = await fetch("/api/export", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        scope: archive.scope,
+        scope,
         storeName: archive.storeName,
         certName: archive.certName,
+        items,
         includeKeys,
         confirmKeys: includeKeys,
         encrypt,
@@ -1791,6 +2062,27 @@ async function handleConfirmImport() {
 }
 
 function handleArchiveChange(event) {
+  if (event.target.id === "archive-store-scope" && state.archive) {
+    const copy = document.getElementById("archive-scope-copy");
+    const picked = event.target.value === "root" ? "root" : "store";
+    if (copy && state.archive.scope === "store") {
+      copy.textContent = archiveScopeCopy(picked, state.archive.storeName, null);
+    } else if (copy && state.archive.scope === "selection") {
+      const stores = (state.archive.items || []).filter((item) => item.kind === "store").length;
+      const certificates = (state.archive.items || []).filter(
+        (item) => item.kind === "certificate",
+      ).length;
+      const storeText =
+        picked === "root"
+          ? `${stores} Root CA${stores === 1 ? "" : "s"} as Root CA only`
+          : `${stores} Root CA${stores === 1 ? "" : "s"} as full chain / store`;
+      const certText = certificates
+        ? ` and ${certificates} certificate${certificates === 1 ? "" : "s"} as This certificate`
+        : "";
+      copy.textContent = `Export selected: ${storeText}${certText}.`;
+    }
+  }
+
   if (event.target.id === "archive-include-keys") {
     const warning = document.getElementById("archive-warning");
     const extra = document.getElementById("archive-key-warning");
@@ -2536,14 +2828,51 @@ els.hierarchySelect.addEventListener("change", () => {
 });
 els.dashboardExpiring.addEventListener("click", handleStoreAction);
 els.detailModal.addEventListener("click", handleStoreAction);
+function handleSelectionChange(event) {
+  const box = event.target;
+  if (!(box instanceof HTMLInputElement) || !box.dataset.select) {
+    return;
+  }
+  const key = selectionKey(box.dataset.select, box.dataset.store, box.dataset.cert);
+  if (box.checked) {
+    state.selection.add(key);
+  } else {
+    state.selection.delete(key);
+  }
+  syncSelectionChecks();
+}
+
+function openSelectedExport() {
+  const items = [...state.selection].map(parseSelectionKey);
+  if (items.length === 0) {
+    showToast("Select a Root CA or a certificate to export.", "info");
+    return;
+  }
+  openExport({ scope: "selection", items });
+}
+
+function handleKeyTypeChange(event) {
+  if (event.target?.name !== "KEY_TYPE" || !event.target.form) {
+    return;
+  }
+  syncKeySizeField(event.target.form);
+  if (event.target.form === els.generateForm) {
+    refreshSectionSummaries();
+  }
+}
+
 document.getElementById("dashboard-export-all-button").addEventListener("click", () => {
   openExport({ scope: "all" });
 });
+document.getElementById("dashboard-export-selected-button").addEventListener("click", openSelectedExport);
 document.getElementById("dashboard-import-button").addEventListener("click", openImport);
 document.getElementById("stores-export-all-button").addEventListener("click", () => {
   openExport({ scope: "all" });
 });
+document.getElementById("stores-export-selected-button").addEventListener("click", openSelectedExport);
 document.getElementById("stores-import-button").addEventListener("click", openImport);
+els.dashboardStores.addEventListener("change", handleSelectionChange);
+els.storesList.addEventListener("change", handleSelectionChange);
 els.archiveModal.addEventListener("click", handleArchiveClick);
 els.archiveModal.addEventListener("change", handleArchiveChange);
 els.toolModal?.addEventListener("click", handleToolClick);
@@ -2566,7 +2895,12 @@ document.addEventListener("keydown", (event) => {
   }
 });
 els.generateForm.addEventListener("submit", handleGenerate);
+els.generateForm.addEventListener("change", handleKeyTypeChange);
+els.configForm.addEventListener("change", handleKeyTypeChange);
 els.generateForm.addEventListener("input", (event) => {
+  if (event.target?.name === "KEY_TYPE") {
+    syncKeySizeField(els.generateForm);
+  }
   refreshSectionSummaries();
   if (applyingPreset) {
     return;
@@ -2659,6 +2993,9 @@ els.trustCommands.addEventListener("click", (event) => {
   });
 });
 els.configForm.addEventListener("submit", handleSaveConfig);
+
+syncHeaderActions(state.activeView);
+syncExportSelectedButtons();
 
 refreshAll().catch((error) => {
   showToast(error.message, "error");

@@ -60,9 +60,9 @@
             <h1 id="view-title">Dashboard</h1>
             <p id="view-description">Overview of your local certificate stores.</p>
           </div>
-          <div class="topbar-actions">
-            <button class="button button-secondary" id="refresh-button">Refresh</button>
-            <button class="button button-primary" id="quick-generate-button">
+          <div class="topbar-actions" hidden>
+            <button class="button button-secondary" id="refresh-button" type="button">Refresh</button>
+            <button class="button button-primary" id="quick-generate-button" type="button">
               Generate Certificate
             </button>
           </div>
@@ -87,14 +87,26 @@
               <div class="panel-header">
                 <div>
                   <h2>Certificate Stores</h2>
-                  <p class="panel-copy">Export every store, or import a TAR into ./certs.</p>
+                  <p class="panel-copy">
+                    Import a TAR into ./certs, export every store, or export the Root CAs and
+                    certificates you select.
+                  </p>
                 </div>
                 <div class="panel-actions">
                   <button class="button button-secondary" id="dashboard-import-button" type="button">
-                    Import TAR
+                    Import
+                  </button>
+                  <button
+                    class="button button-secondary"
+                    id="dashboard-export-selected-button"
+                    type="button"
+                    disabled
+                    title="Select a Root CA or certificate first"
+                  >
+                    Export selected
                   </button>
                   <button class="button button-primary" id="dashboard-export-all-button" type="button">
-                    Export all
+                    Export All
                   </button>
                 </div>
               </div>
@@ -190,17 +202,26 @@
               <div>
                 <h2>Import or export</h2>
                 <p class="panel-copy">
-                  Download a <code>.tar.gz</code> of one store, one certificate, or everything under
-                  <code>./certs</code>. Import writes only inside that folder. Info, Convert, and
-                  Password act on the certificate you pick.
+                  Select a Root CA or certificate, then Export selected. Import reads a TAR into
+                  <code>./certs</code>. Export All backs up every store. Each row still has
+                  Export TAR. Info, Convert, and Password act on the certificate you pick.
                 </p>
               </div>
               <div class="panel-actions">
                 <button class="button button-secondary" id="stores-import-button" type="button">
-                  Import TAR
+                  Import
+                </button>
+                <button
+                  class="button button-secondary"
+                  id="stores-export-selected-button"
+                  type="button"
+                  disabled
+                  title="Select a Root CA or certificate first"
+                >
+                  Export selected
                 </button>
                 <button class="button button-primary" id="stores-export-all-button" type="button">
-                  Export all
+                  Export All
                 </button>
               </div>
             </div>
