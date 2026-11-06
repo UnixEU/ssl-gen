@@ -319,7 +319,7 @@ Open **Hierarchy** and select a Root CA. The page draws that CA above the certif
 
 Root CA, certificate, and advanced settings stay in collapsible sections. Collapsed sections are still included when you generate.
 
-**Trust Guide** copies the macOS, Linux, and Windows install commands for the Root CA you select. **Download Root .crt** saves only the public certificate at `./certs/<ROOT_CA_NAME>/<ROOT_CA_NAME>.crt`.
+**Trust Guide** lists only Root CAs that exist under `./certs/`. It copies the macOS, Linux, and Windows install commands for the one you select. A name that is only in `.env` or `.env.example`, or a Root CA you already deleted, is not listed. When nothing is on disk, the page says so and hides the install commands and download. **Download Root .crt** saves only the public certificate at `./certs/<ROOT_CA_NAME>/<ROOT_CA_NAME>.crt` for a store that is actually there.
 
 The Certificates page filters the list by name, subject, or SAN.
 
@@ -412,7 +412,7 @@ sudo update-ca-certificates
 
 **Windows:** Import `my-root-ca.crt` into *Trusted Root Certification Authorities* via `certmgr.msc`.
 
-The web UI [Trust Guide](#generate-presets-and-trust-guide) copies these commands for the Root CA you select and downloads the public `.crt` only.
+The web UI [Trust Guide](#generate-presets-and-trust-guide) copies these commands for a Root CA that exists under `./certs/` and downloads the public `.crt` only.
 
 ---
 

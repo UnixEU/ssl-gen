@@ -168,6 +168,38 @@ function readEnvFile(envPath) {
   return values;
 }
 
+function readSavedEnvValues(envPath) {
+  if (!fs.existsSync(envPath)) {
+    return { exists: false, values: {} };
+  }
+
+  const parsed = parseEnvFile(fs.readFileSync(envPath, "utf8"));
+  const values = {};
+
+  for (const key of ENV_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(parsed, key)) {
+      values[key] = parsed[key];
+    }
+  }
+
+  return { exists: true, values };
+}
+
+function readMergedEnv(envPath, examplePath) {
+  if (!examplePath || !fs.existsSync(examplePath)) {
+    throw new Error(`.env.example file not found at ${examplePath}`);
+  }
+
+  const defaults = readEnvFile(examplePath);
+  const saved = readSavedEnvValues(envPath);
+
+  return {
+    values: { ...defaults, ...saved.values },
+    defaults,
+    envExists: saved.exists,
+  };
+}
+
 function serializeEnvFile(values) {
   const emitted = new Set();
   const lines = [];
@@ -301,6 +333,7 @@ function validateConfig(values) {
 module.exports = {
   ENV_SECTIONS,
   readEnvFile,
+  readMergedEnv,
   writeEnvFile,
   validateConfig,
   keySizeError,
