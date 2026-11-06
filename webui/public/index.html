@@ -133,10 +133,20 @@
                 </p>
               </div>
               <div class="panel-actions">
-                <label class="toggle">
-                  <input type="checkbox" id="save-before-generate" checked />
-                  <span>Save configuration to .env</span>
-                </label>
+                <div class="save-env-controls">
+                  <label class="toggle">
+                    <input type="checkbox" id="save-before-generate" />
+                    <span>Save configuration to .env</span>
+                  </label>
+                  <button type="button" class="button button-secondary button-small" id="reset-defaults-button">
+                    Reset to default values
+                  </button>
+                  <p class="meta-label" id="save-env-note">
+                    Off unless you turn it on. Generation still uses these fields.
+                    Settings you have not saved fall back to <code>.env.example</code>.
+                    Reset loads that file into the form and does not write <code>.env</code>.
+                  </p>
+                </div>
               </div>
             </div>
 
@@ -265,7 +275,9 @@
               <div>
                 <h2>Project Configuration</h2>
                 <p class="panel-copy">
-                  Edit the same values used by <code>make certs</code> and the terminal workflow.
+                  Edit the values used by <code>make certs</code> and the terminal workflow.
+                  Save writes <code>.env</code>. Each setting falls back to
+                  <code>.env.example</code> until that setting is saved.
                 </p>
               </div>
             </div>
@@ -287,8 +299,8 @@
               <div>
                 <h2>Trust the Root CA Locally</h2>
                 <p class="panel-copy">
-                  Copy the install command for your system. This page downloads only the public
-                  Root CA certificate (<code>.crt</code>).
+                  Copy the install command for a Root CA that exists under <code>./certs/</code>.
+                  This page downloads only the public Root CA certificate (<code>.crt</code>).
                 </p>
               </div>
               <div class="panel-actions">

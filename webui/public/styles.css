@@ -837,6 +837,22 @@ details.form-section .field-grid {
   font-size: 0.88rem;
 }
 
+.save-env-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: 34ch;
+}
+
+.save-env-controls .meta-label {
+  margin: 0;
+}
+
+.trust-empty {
+  grid-column: 1 / -1;
+}
+
 .toast-stack {
   position: fixed;
   right: 20px;

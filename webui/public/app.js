@@ -1,8 +1,9 @@
 import { buildPreset, isIpAddress } from "./presets.js";
-import { trustCommandsFor } from "./trust-commands.js";
+import { selectTrustStore, trustCommandsFor } from "./trust-commands.js";
 
 const state = {
   config: {},
+  defaults: {},
   sections: {},
   stores: [],
   activeView: "dashboard",
@@ -162,11 +163,12 @@ const ARTIFACTS = [
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
+    ...options,
+    cache: "no-store",
     headers: {
       "Content-Type": "application/json",
       ...(options.headers || {}),
     },
-    ...options,
   });
 
   const payload = await response.json().catch(() => ({}));
@@ -1318,31 +1320,21 @@ function closeDetail() {
   els.detailModal.hidden = true;
 }
 
-function selectedTrustName(stores) {
-  const names = new Set(stores.map((store) => store.name));
-  if (state.trustStore && names.has(state.trustStore)) {
-    return state.trustStore;
-  }
-  if (state.config.ROOT_CA_NAME && names.has(state.config.ROOT_CA_NAME)) {
-    return state.config.ROOT_CA_NAME;
-  }
-  return stores[0]?.name || state.config.ROOT_CA_NAME || "my-root-ca";
-}
-
 function renderTrustGuide() {
   const stores = [...state.stores].sort((left, right) => left.name.localeCompare(right.name));
-  const selected = selectedTrustName(stores);
+  const selected = selectTrustStore(stores, state.trustStore, state.config.ROOT_CA_NAME);
   state.trustStore = selected;
   const store = stores.find((entry) => entry.name === selected);
-  const hasCrt = Boolean(store?.artifacts?.crt);
+  const hasCrt = Boolean(selected && store?.artifacts?.crt);
 
   if (els.trustSelect) {
-    if (stores.length === 0) {
+    if (!hasCrt) {
       els.trustSelect.disabled = true;
-      els.trustSelect.innerHTML = `<option value="${escapeHtml(selected)}">${escapeHtml(selected)} (not generated)</option>`;
+      els.trustSelect.innerHTML = `<option value="">No Root CAs</option>`;
     } else {
       els.trustSelect.disabled = false;
       els.trustSelect.innerHTML = stores
+        .filter((entry) => entry.artifacts?.crt)
         .map((entry) => {
           const isSelected = entry.name === selected ? " selected" : "";
           return `<option value="${escapeHtml(entry.name)}"${isSelected}>${escapeHtml(entry.name)}</option>`;
@@ -1352,10 +1344,19 @@ function renderTrustGuide() {
   }
 
   if (els.trustDownload) {
+    els.trustDownload.hidden = !hasCrt;
     els.trustDownload.disabled = !hasCrt;
-    els.trustDownload.title = hasCrt
-      ? `Download ${selected}.crt`
-      : "Generate this Root CA before downloading the certificate";
+    els.trustDownload.title = hasCrt ? `Download ${selected}.crt` : "";
+  }
+
+  if (!hasCrt) {
+    els.trustCommands.innerHTML = `
+      <div class="empty-state empty-cta trust-empty">
+        <p>No Root CA on disk. Generate a certificate to create one under <code>./certs/</code>. Install commands show up here for Root CAs that exist.</p>
+        <button type="button" class="button button-primary" data-action="go-generate">Generate a certificate</button>
+      </div>
+    `;
+    return;
   }
 
   els.trustCommands.innerHTML = trustCommandsFor(selected)
@@ -1414,6 +1415,7 @@ async function refreshAll() {
   ]);
 
   state.config = configPayload.values;
+  state.defaults = configPayload.defaults || {};
   state.sections = configPayload.sections;
   state.stores = storesPayload.stores;
 
@@ -1487,6 +1489,42 @@ async function handleValidate() {
   }
 }
 
+function applyConfigToForms(values) {
+  const open = {};
+  els.generateFields?.querySelectorAll("details[data-section]").forEach((node) => {
+    open[node.dataset.section] = node.open;
+  });
+  if (Object.keys(open).length > 0) {
+    state.generateOpen = open;
+  }
+
+  state.config = { ...values };
+  state.activePreset = "";
+  updatePresetChrome();
+  renderFormSections(els.generateFields, { collapsible: true, prefix: "generate" });
+  renderFormSections(els.configFields, { includeWebUi: true, prefix: "config" });
+  renderStats();
+}
+
+async function handleResetDefaults() {
+  setBusy(true, "Loading default values...");
+  try {
+    const payload = await api("/api/config");
+    const defaults = payload.defaults;
+    if (!defaults || !String(defaults.ROOT_CA_NAME || "").trim()) {
+      throw new Error("Default values from .env.example are unavailable.");
+    }
+
+    state.defaults = defaults;
+    applyConfigToForms(defaults);
+    showToast("Restored default values from .env.example. .env was not changed.", "info");
+  } catch (error) {
+    showToast(error.message, "error");
+  } finally {
+    setBusy(false);
+  }
+}
+
 async function handleSaveConfig(event) {
   event.preventDefault();
   const values = readFormValues(els.configForm);
@@ -1553,6 +1591,12 @@ async function handleDeleteStore(storeName) {
       method: "DELETE",
     });
     state.stores = result.stores || [];
+    if (state.trustStore === storeName) {
+      state.trustStore = "";
+    }
+    if (state.hierarchyStore === storeName) {
+      state.hierarchyStore = "";
+    }
     renderStats();
     renderStores();
     renderTrustGuide();
@@ -2414,6 +2458,7 @@ async function refreshStoreViews() {
   renderStats();
   renderStores();
   renderHierarchy();
+  renderTrustGuide();
   if (!state.detail) {
     return;
   }
@@ -2965,24 +3010,42 @@ els.storeSearch?.addEventListener("input", () => {
   state.storeQuery = els.storeSearch.value;
   renderStores();
 });
+document.getElementById("reset-defaults-button")?.addEventListener("click", () => {
+  handleResetDefaults();
+});
 els.trustSelect?.addEventListener("change", () => {
-  state.trustStore = els.trustSelect.value;
+  const next = els.trustSelect.value;
+  if (!state.stores.some((entry) => entry.name === next && entry.artifacts?.crt)) {
+    return;
+  }
+  state.trustStore = next;
   renderTrustGuide();
 });
 els.trustDownload?.addEventListener("click", () => {
-  const store = state.stores.find((entry) => entry.name === state.trustStore);
-  if (!store?.artifacts?.crt) {
-    showToast("That Root CA certificate is not on disk yet.", "warning");
+  const store = state.stores.find((entry) => entry.name === state.trustStore && entry.artifacts?.crt);
+  if (!store) {
+    showToast("That Root CA is not on disk.", "warning");
     return;
   }
   handleDownload(store.name, null, "crt").catch((error) => showToast(error.message, "error"));
 });
 els.trustCommands.addEventListener("click", (event) => {
-  const button = event.target.closest("[data-action='copy-trust']");
+  const button = event.target.closest("[data-action]");
   if (!button) {
     return;
   }
-  const command = trustCommandsFor(state.trustStore).find(
+  if (button.dataset.action === "go-generate") {
+    switchView("generate");
+    return;
+  }
+  if (button.dataset.action !== "copy-trust") {
+    return;
+  }
+  const store = state.stores.find((entry) => entry.name === state.trustStore && entry.artifacts?.crt);
+  if (!store) {
+    return;
+  }
+  const command = trustCommandsFor(store.name).find(
     (entry) => entry.id === button.dataset.platform,
   );
   if (!command) {

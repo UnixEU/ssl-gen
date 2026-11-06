@@ -4,7 +4,7 @@ const path = require("path");
 const express = require("express");
 const {
   ENV_SECTIONS,
-  readEnvFile,
+  readMergedEnv,
   writeEnvFile,
   validateConfig,
 } = require("./lib/env");
@@ -27,6 +27,7 @@ const { runScript, getLastOutput, isRunning } = require("./lib/runner");
 
 const PROJECT_ROOT = process.env.PROJECT_ROOT || "/project";
 const ENV_PATH = path.join(PROJECT_ROOT, ".env");
+const EXAMPLE_PATH = path.join(PROJECT_ROOT, ".env.example");
 const RUN_ENV_PATH = path.join(PROJECT_ROOT, ".env.run");
 const GENERATE_SCRIPT = path.join(PROJECT_ROOT, "scripts", "generate-certs.sh");
 const TEST_SCRIPT = path.join(PROJECT_ROOT, "scripts", "test-inline.sh");
@@ -37,7 +38,15 @@ const PUBLIC_DIR = path.join(__dirname, "public");
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
+app.use("/api", (_req, res, next) => {
+  res.setHeader("Cache-Control", "no-store");
+  next();
+});
 app.use(express.static(PUBLIC_DIR));
+
+function loadConfig() {
+  return readMergedEnv(ENV_PATH, EXAMPLE_PATH);
+}
 
 function asyncHandler(handler) {
   return (req, res, next) => {
@@ -54,7 +63,7 @@ function getWebUiUrl(values) {
 app.get(
   "/api/status",
   asyncHandler(async (_req, res) => {
-    const config = readEnvFile(ENV_PATH);
+    const { values: config } = loadConfig();
     res.json({
       running: isRunning(),
       webuiUrl: getWebUiUrl(config),
@@ -66,9 +75,10 @@ app.get(
 app.get(
   "/api/config",
   asyncHandler(async (_req, res) => {
-    const values = readEnvFile(ENV_PATH);
+    const { values, defaults } = loadConfig();
     res.json({
       values,
+      defaults,
       sections: ENV_SECTIONS,
     });
   }),
@@ -77,7 +87,7 @@ app.get(
 app.put(
   "/api/config",
   asyncHandler(async (req, res) => {
-    const current = readEnvFile(ENV_PATH);
+    const { values: current } = loadConfig();
     const next = { ...current, ...(req.body?.values || {}) };
     const errors = validateConfig(next);
 
@@ -100,7 +110,7 @@ app.put(
 app.post(
   "/api/config/validate",
   asyncHandler(async (req, res) => {
-    const current = readEnvFile(ENV_PATH);
+    const { values: current } = loadConfig();
     const candidate = { ...current, ...(req.body?.values || {}) };
     const errors = validateConfig(candidate);
     res.json({ valid: errors.length === 0, errors });
@@ -119,7 +129,7 @@ app.get(
 app.get(
   "/api/stores/:storeName/reuse-config",
   asyncHandler(async (req, res) => {
-    const current = readEnvFile(ENV_PATH);
+    const { values: current } = loadConfig();
     const result = buildReuseConfig(PROJECT_ROOT, req.params.storeName, current);
     res.json(result);
   }),
@@ -382,7 +392,7 @@ app.post(
       return;
     }
 
-    const current = readEnvFile(ENV_PATH);
+    const { values: current } = loadConfig();
     const next = { ...current, ...(req.body?.values || {}) };
     const errors = validateConfig(next);
 
@@ -393,7 +403,9 @@ app.post(
 
     writeEnvFile(RUN_ENV_PATH, next);
 
-    if (req.body?.save !== false) {
+    // Persist only when the user explicitly opts in. Leaving this off must not
+    // create, rewrite, or delete an existing .env.
+    if (req.body?.save === true) {
       writeEnvFile(ENV_PATH, next);
     }
 
@@ -473,7 +485,7 @@ function start() {
       app,
     )
     .listen(INTERNAL_PORT, "0.0.0.0", () => {
-      const config = readEnvFile(ENV_PATH);
+      const { values: config } = loadConfig();
       console.log(`ssl-gen web UI listening on port ${INTERNAL_PORT}`);
       console.log(`Open ${getWebUiUrl(config)} from the Docker host`);
     });

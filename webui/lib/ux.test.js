@@ -28,6 +28,38 @@ test("certificate presets keep the common name in the SAN list", async () => {
   assert.match(buildPreset("nope").error, /Unknown preset/);
 });
 
+test("trust guide selects only root CAs that exist on disk", async () => {
+  const { selectTrustStore, trustCommandsFor } = await import("../public/trust-commands.js");
+  const onDisk = (name) => ({ name, artifacts: { crt: true } });
+
+  assert.equal(selectTrustStore([], "UnixEURootCA", "UnixEURootCA"), "");
+  assert.equal(
+    selectTrustStore([onDisk("my-root-ca")], "UnixEURootCA", "UnixEURootCA"),
+    "my-root-ca",
+  );
+  assert.equal(
+    selectTrustStore([{ name: "gone", artifacts: { crt: false } }], "gone", "gone"),
+    "",
+  );
+  assert.equal(
+    selectTrustStore([onDisk("beta"), onDisk("alpha")], "deleted", "UnixEURootCA"),
+    "beta",
+  );
+  assert.equal(selectTrustStore([onDisk("beta"), onDisk("alpha")], "", "alpha"), "alpha");
+  assert.equal(
+    selectTrustStore([onDisk("beta"), onDisk("alpha")], "beta", "alpha"),
+    "beta",
+  );
+
+  const selected = selectTrustStore([onDisk("my-root-ca")], "", "UnixEURootCA");
+  const commands = trustCommandsFor(selected);
+  assert.match(commands.map((entry) => entry.command).join("\n"), /my-root-ca\.crt/);
+  assert.equal(
+    commands.some((entry) => entry.command.includes("UnixEURootCA")),
+    false,
+  );
+});
+
 test("trust commands copy the public root certificate only", async () => {
   const { trustCommandsFor } = await import("../public/trust-commands.js");
   const commands = trustCommandsFor("lab-root");

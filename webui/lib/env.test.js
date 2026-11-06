@@ -3,7 +3,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
-const { readEnvFile, validateConfig, writeEnvFile } = require("./env");
+const { readEnvFile, readMergedEnv, validateConfig, writeEnvFile } = require("./env");
 
 function baseConfig(overrides = {}) {
   return {
@@ -84,4 +84,39 @@ test("saving configuration writes KEY_SIZE into the advanced section", () => {
   const values = readEnvFile(legacy);
   assert.equal(values.KEY_SIZE, "");
   assert.equal(values.KEY_TYPE, "ec");
+});
+
+test("merged config uses .env.example and overlays only keys present in .env", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ssl-gen-merge-"));
+  const examplePath = path.join(dir, ".env.example");
+  const envPath = path.join(dir, ".env");
+  writeEnvFile(
+    examplePath,
+    baseConfig({
+      ROOT_CA_NAME: "from-example",
+      ROOT_CA_COMMON_NAME: "Example Root CA",
+      ROOT_CA_PASSPHRASE: "example-pass",
+      P12_PASSWORD: "example-secret",
+    }),
+  );
+  const partial = "ROOT_CA_NAME=from-env\nROOT_CA_PASSPHRASE=\n";
+  fs.writeFileSync(envPath, partial);
+
+  const merged = readMergedEnv(envPath, examplePath);
+  assert.equal(merged.envExists, true);
+  assert.equal(merged.values.ROOT_CA_NAME, "from-env");
+  assert.equal(merged.values.ROOT_CA_PASSPHRASE, "");
+  assert.equal(merged.values.ROOT_CA_COMMON_NAME, "Example Root CA");
+  assert.equal(merged.values.P12_PASSWORD, "example-secret");
+  assert.equal(merged.values.CERT_NAME, "my-local-cert");
+  assert.equal(merged.defaults.ROOT_CA_NAME, "from-example");
+  assert.equal(merged.defaults.ROOT_CA_PASSPHRASE, "example-pass");
+  assert.equal(fs.readFileSync(envPath, "utf8"), partial);
+
+  fs.unlinkSync(envPath);
+  const fallback = readMergedEnv(envPath, examplePath);
+  assert.equal(fallback.envExists, false);
+  assert.equal(fallback.values.ROOT_CA_NAME, "from-example");
+  assert.equal(fallback.values.P12_PASSWORD, "example-secret");
+  assert.equal(fs.existsSync(envPath), false);
 });
