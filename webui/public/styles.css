@@ -443,6 +443,10 @@ details.form-section .field-grid {
   gap: 6px;
 }
 
+.field[hidden] {
+  display: none !important;
+}
+
 .field.full {
   grid-column: 1 / -1;
 }
@@ -879,6 +883,61 @@ details.form-section .field-grid {
 
 .modal-footer {
   border-top: 1px solid var(--border);
+}
+
+#tool-modal:not([hidden]) {
+  z-index: 40;
+}
+
+.tool-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.field-help {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.chain-list {
+  display: grid;
+  gap: 10px;
+}
+
+.chain-card {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: rgba(2, 6, 23, 0.35);
+}
+
+.chain-card.bad {
+  border-color: rgba(248, 113, 113, 0.45);
+}
+
+.chain-card.warn {
+  border-color: rgba(251, 191, 36, 0.45);
+}
+
+.openssl-text {
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.modal-body h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.modal-body details summary {
+  cursor: pointer;
+  color: var(--accent);
 }
 
 .callout {
